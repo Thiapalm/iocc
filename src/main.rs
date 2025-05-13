@@ -8,9 +8,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, exit};
 use std::thread;
-
+mod comm;
+use comm::*;
 #[derive(Parser)]
 #[command(name = "iocc", version, about = "IO Control Center para comunicação com MCP2221 via plugins", long_about = None)]
 struct Cli {
@@ -23,10 +24,7 @@ enum Commands {
     /// Exibe status local
     Status,
     /// Gera auto-complete (zsh, bash, etc)
-    Completions {
-        #[arg(value_enum)]
-        shell: Shell,
-    },
+    Scan,
     /// Executa plugin dinâmico
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -217,6 +215,15 @@ fn main() {
     let cli = Cli::parse();
     let config = read_config();
 
+    let mut i2cdev = match start_device() {
+        Ok(x) => x,
+        Err(err) => {
+            println!("Error: {err}, check USB connection");
+            kill_myself(&config);
+            exit(1);
+        }
+    };
+
     let raw_args: Vec<String> = env::args().collect();
 
     // Se o comando for 'help', exibir ajuda e os plugins detectados
@@ -244,9 +251,9 @@ fn main() {
         Some(Commands::Status) => {
             println!("Status: tudo funcionando corretamente.");
         }
-        Some(Commands::Completions { shell }) => {
-            let mut cmd = Cli::command();
-            generate(*shell, &mut cmd, "iocc", &mut std::io::stdout());
+        Some(Commands::Scan) => {
+            scan_bus(&mut i2cdev);
+            kill_myself(&config);
         }
         Some(Commands::External(args)) => {
             if !args.is_empty() {
