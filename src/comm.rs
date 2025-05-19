@@ -1,8 +1,5 @@
 use embedded_hal::blocking::i2c::Read;
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::{process::exit, thread::sleep, time::Duration};
+use std::{process::exit, time::Duration};
 
 pub fn start_device() -> Result<mcp2221::Handle, mcp2221::Error> {
     let mut config = mcp2221::Config::default();
@@ -20,25 +17,6 @@ pub fn start_device() -> Result<mcp2221::Handle, mcp2221::Error> {
     };
     Ok(dev)
 }
-
-// fn read_register(dev: &mut mcp2221::Handle, address: u8, reg: Register, port: Port) -> u8 {
-//     let mut read: [u8; 1] = [0; 1];
-//     let mut result: [u8; 1] = [0; 1];
-//     read[0] = reg as u8 | port as u8;
-//     let _ = dev.write_read_address(address, &mut read, &mut result);
-
-//     result[0]
-// }
-
-// fn write_register(dev: &mut mcp2221::Handle, address: u8, port: Port, reg: Register, value: u8) {
-//     let mut result: [u8; 2] = [0; 2];
-//     result[0] = reg as u8 | port as u8;
-//     result[1] = value;
-//     match dev.write_read_address(address, &mut result, &mut [0u8]) {
-//         Ok(()) => (),
-//         Err(x) => println!("Error: {}", x),
-//     }
-// }
 
 pub fn scan_bus(dev: &mut mcp2221::Handle) {
     match dev.check_bus() {
@@ -60,5 +38,32 @@ pub fn scan_bus(dev: &mut mcp2221::Handle) {
             }
         }
         println!();
+    }
+}
+
+pub fn write_device(
+    dev: &mut mcp2221::Handle,
+    address: u8,
+    register: u8,
+    data: &mut Vec<u8>,
+) -> Result<(), mcp2221::Error> {
+    let mut my_data = vec![register];
+    my_data.append(data);
+    dev.write_read_address(address, &mut my_data, &mut [0u8])
+}
+
+pub fn read_device(
+    dev: &mut mcp2221::Handle,
+    address: u8,
+    register: u8,
+    expected: usize,
+) -> Result<Vec<u8>, mcp2221::Error> {
+    //println!("addr: {:#02x} reg {:#02x}", addr, register);
+    let mut read = vec![0; expected];
+    let mut reg: [u8; 1] = [0; 1];
+    reg[0] = register;
+    match dev.write_read_address(address, &mut reg, &mut read) {
+        Ok(()) => Ok(read),
+        Err(x) => Err(x),
     }
 }
