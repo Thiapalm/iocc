@@ -33,7 +33,7 @@ enum Commands {
         #[arg(short, long, value_parser = parse_u8_hex)]
         register: u8,
         /// Data to write (hexadecimal space separated if more than one and up to 60 bytes)
-        #[arg(short, long, value_parser = parse_u8_hex, num_args = 1..)]
+        #[arg(short, long, value_parser = parse_u8_hex, num_args = 1.., required = true)]
         data: Vec<u8>,
     },
     /// Read from device
@@ -54,13 +54,20 @@ enum Commands {
 }
 
 #[derive(Debug, Deserialize)]
+struct Iocc {
+    iocc: Config,
+}
+
+#[derive(Debug, Deserialize)]
 struct Config {
     verbose: bool,
 }
 
-fn read_config() -> Config {
+fn read_config() -> Iocc {
     let config_content = fs::read_to_string("config.yaml").unwrap_or_default();
-    serde_yaml::from_str(&config_content).unwrap_or(Config { verbose: false })
+    serde_yaml::from_str(&config_content).unwrap_or(Iocc {
+        iocc: Config { verbose: false },
+    })
 }
 
 fn run_plugin(plugin_name: &str, args: &[String], config: &Config) {
@@ -174,7 +181,7 @@ fn list_plugins() -> Vec<String> {
 
 fn main() {
     let cli = Cli::parse();
-    let config = read_config();
+    let config = read_config().iocc;
 
     let mut i2cdev = match start_device() {
         Ok(x) => x,
@@ -233,6 +240,9 @@ fn main() {
             register,
             expected,
         }) => {
+            if config.verbose {
+                println!("[host] Reading device: {}", *address);
+            }
             let data = read_device(&mut i2cdev, *address, *register, *expected);
             match data {
                 Ok(data) => {
