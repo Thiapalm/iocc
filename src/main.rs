@@ -1,8 +1,9 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
 
 use std::path::PathBuf;
@@ -53,13 +54,34 @@ enum Commands {
     External(Vec<String>),
 }
 
-#[derive(Debug, Deserialize)]
-struct Iocc {
-    iocc: Config,
+#[derive(Debug)]
+pub struct HexU8(pub u8);
+
+impl<'de> Deserialize<'de> for HexU8 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let value =
+            u8::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)?;
+        Ok(HexU8(value))
+    }
 }
 
+impl fmt::Display for HexU8 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x{:02X}", self.0)
+    }
+}
 #[derive(Debug, Deserialize)]
-struct Config {
+struct RootConfig {
+    iocc: Iocc,
+}
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct Iocc {
+    address: HexU8,
     verbose: bool,
     i2c_speed_hz: u32,
     reset_on_open: bool,
@@ -68,17 +90,21 @@ struct Config {
 
 fn read_config() -> Iocc {
     let config_content = fs::read_to_string("config.yaml").unwrap_or_default();
-    serde_yaml::from_str(&config_content).unwrap_or(Iocc {
-        iocc: Config {
+    let parsed: Result<RootConfig, _> = serde_yaml::from_str(&config_content);
+
+    match parsed {
+        Ok(cfg) => cfg.iocc,
+        Err(_) => Iocc {
+            address: HexU8(0x20),
             verbose: false,
             i2c_speed_hz: 400_000,
             reset_on_open: false,
             timeout: 10,
         },
-    })
+    }
 }
 
-fn run_plugin(plugin_name: &str, args: &[String], config: &Config) {
+fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) {
     //let plugin_bin = format!("iocc-{}", plugin_name);
     let plugin_bin = {
         let base = format!("iocc-{}", plugin_name);
@@ -219,7 +245,7 @@ fn main() {
     }
 
     let cli = Cli::parse();
-    let config = read_config().iocc;
+    let config = read_config();
     if config.verbose {
         println!(
             "[host] Speed: {} Reset: {} timeout: {}",

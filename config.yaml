@@ -1,17 +1,20 @@
 iocc:
-  verbose: false
+  address: 0x20
+  verbose: true
   i2c_speed_hz: 400000 #in Hz
   reset_on_open: false
   timeout: 10 # in milliseconds
 
 ont:
+  address: 0x20
   verbose: false
   i2c_speed_hz: 400000 #in Hz
   reset_on_open: false
   timeout: 10 # in milliseconds
-  port: porta
-  pin: pin3
-  direction: output
+  ont:
+    port: porta
+    pin: pin3
+    direction: output
   ethernet:
     port: porta
     pin: pin1
@@ -20,3 +23,16 @@ ont:
     port: porta
     pin: pin5
     direction: output
+
+powmon:
+  address: 0x4A
+  verbose: false
+  i2c_speed_hz: 400000 #in Hz
+  reset_on_open: false
+  timeout: 10 # in milliseconds
+  chip:
+    mode: BusVoltageContinuous
+    vbusct: _1_1_ms
+    vscht: _1_1_ms
+    average: _16
+    maxcurrent: 5.0 #in Amps
