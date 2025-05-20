@@ -61,12 +61,20 @@ struct Iocc {
 #[derive(Debug, Deserialize)]
 struct Config {
     verbose: bool,
+    i2c_speed_hz: u32,
+    reset_on_open: bool,
+    timeout: u64,
 }
 
 fn read_config() -> Iocc {
     let config_content = fs::read_to_string("config.yaml").unwrap_or_default();
     serde_yaml::from_str(&config_content).unwrap_or(Iocc {
-        iocc: Config { verbose: false },
+        iocc: Config {
+            verbose: false,
+            i2c_speed_hz: 400_000,
+            reset_on_open: false,
+            timeout: 10,
+        },
     })
 }
 
@@ -183,7 +191,7 @@ fn main() {
     let cli = Cli::parse();
     let config = read_config().iocc;
 
-    let mut i2cdev = match start_device() {
+    let mut i2cdev = match start_device(config.i2c_speed_hz, config.reset_on_open, config.timeout) {
         Ok(x) => x,
         Err(err) => {
             println!("Error: {err}, check USB connection");

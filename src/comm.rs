@@ -1,14 +1,18 @@
 use embedded_hal::blocking::i2c::Read;
 use std::{process::exit, time::Duration};
 
-pub fn start_device() -> Result<mcp2221::Handle, mcp2221::Error> {
+pub fn start_device(
+    speed: u32,
+    reset: bool,
+    timeout: u64,
+) -> Result<mcp2221::Handle, mcp2221::Error> {
     let mut config = mcp2221::Config::default();
-    config.i2c_speed_hz = 400_000;
-    config.reset_on_open = false;
+    config.i2c_speed_hz = speed;
+    config.reset_on_open = reset;
     // For talking to a peripheral we might want a higher timeout, but for
     // scanning the bus, a short timeout is good since it allows us to scan all
     // addresses more quickly.
-    config.timeout = Duration::from_millis(10);
+    config.timeout = Duration::from_millis(timeout);
     let dev = match mcp2221::Handle::open_first(&config) {
         Ok(x) => x,
         Err(err) => {
