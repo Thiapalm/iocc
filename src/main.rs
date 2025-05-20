@@ -89,7 +89,6 @@ fn run_plugin(plugin_name: &str, args: &[String], config: &Config) {
         }
     };
 
-    println!("{:?}", plugin_bin);
     let paths = vec![
         env::current_exe()
             .ok()
@@ -97,8 +96,6 @@ fn run_plugin(plugin_name: &str, args: &[String], config: &Config) {
         Some(env::current_dir().unwrap()),
         env::var("PATH").ok().map(|_| PathBuf::from("")),
     ];
-
-    println!("{:?}", paths);
 
     for path_opt in paths.into_iter().flatten() {
         let full_path = path_opt.join(&plugin_bin);
@@ -156,8 +153,11 @@ fn list_plugins() -> Vec<String> {
                 if path.is_file() {
                     if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
                         if file_name.starts_with("iocc-") {
-                            let name = file_name.trim_end_matches(".exe").replacen("iocc-", "", 1);
-                            found.insert(name);
+                            let base_name = file_name
+                                .strip_suffix(".exe")
+                                .unwrap_or(file_name)
+                                .replacen("iocc-", "", 1);
+                            found.insert(base_name);
                         }
                     }
                 }
@@ -173,9 +173,11 @@ fn list_plugins() -> Vec<String> {
                     if path.is_file() {
                         if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
                             if file_name.starts_with("iocc-") {
-                                let name =
-                                    file_name.trim_end_matches(".exe").replacen("iocc-", "", 1);
-                                found.insert(name);
+                                let base_name = file_name
+                                    .strip_suffix(".exe")
+                                    .unwrap_or(file_name)
+                                    .replacen("iocc-", "", 1);
+                                found.insert(base_name);
                             }
                         }
                     }
@@ -188,8 +190,42 @@ fn list_plugins() -> Vec<String> {
 }
 
 fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+
+    // Detecta se o primeiro argumento é um plugin conhecido
+    if raw_args.len() >= 2 {
+        let command = &raw_args[1];
+        let plugins = list_plugins();
+        if !plugins.contains(command) {
+            // Se o comando for 'help', exibir ajuda e os plugins detectados
+            if raw_args.iter().any(|arg| arg == "--help" || arg == "-h") {
+                let mut cmd = Cli::command();
+                cmd.print_help().unwrap();
+
+                // Aqui será a listagem dos plugins
+                let plugins = list_plugins();
+                if !plugins.is_empty() {
+                    println!("\nDetected Plugins:");
+                    for plugin in plugins {
+                        println!("  {}", plugin);
+                    }
+                } else {
+                    println!("\nNo Plugin detected.");
+                }
+
+                return; // Retornar para não prosseguir com a execução normal
+            }
+        }
+    }
+
     let cli = Cli::parse();
     let config = read_config().iocc;
+    if config.verbose {
+        println!(
+            "[host] Speed: {} Reset: {} timeout: {}",
+            config.i2c_speed_hz, config.reset_on_open, config.timeout
+        );
+    }
 
     let mut i2cdev = match start_device(config.i2c_speed_hz, config.reset_on_open, config.timeout) {
         Ok(x) => x,
@@ -198,27 +234,6 @@ fn main() {
             exit(1);
         }
     };
-
-    let raw_args: Vec<String> = env::args().collect();
-
-    // Se o comando for 'help', exibir ajuda e os plugins detectados
-    if raw_args.contains(&"help".to_string()) {
-        let mut cmd = Cli::command();
-        cmd.print_help().unwrap();
-
-        // Aqui será a listagem dos plugins
-        let plugins = list_plugins();
-        if !plugins.is_empty() {
-            println!("\nDetected Plugins:");
-            for plugin in plugins {
-                println!("  {}", plugin);
-            }
-        } else {
-            println!("\nNo Plugin detected.");
-        }
-
-        return; // Retornar para não prosseguir com a execução normal
-    }
 
     match &cli.command {
         Some(Commands::Status) => {

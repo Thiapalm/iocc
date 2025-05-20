@@ -3,3 +3,20 @@ iocc:
   i2c_speed_hz: 400000 #in Hz
   reset_on_open: false
   timeout: 10 # in milliseconds
+
+ont:
+  verbose: false
+  i2c_speed_hz: 400000 #in Hz
+  reset_on_open: false
+  timeout: 10 # in milliseconds
+  port: porta
+  pin: pin3
+  direction: output
+  ethernet:
+    port: porta
+    pin: pin1
+    direction: output
+  fiber:
+    port: porta
+    pin: pin5
+    direction: output
