@@ -1,6 +1,16 @@
 use embedded_hal::blocking::i2c::Read;
 use std::{process::exit, time::Duration};
 
+/**
+ * Initializes the I2C connection towards a given device.
+ * Inputs:
+ *   speed - Bus speed in Hz (ex. 400000 Hz)
+ *   reset - Reset the chip when starting communication or not
+ *   timeout - communication timeout in milliseconds (ex. 10ms)
+ *
+ * Output:
+ *   Error code if there was a problem od a mcp2221 Handle
+ */
 pub fn start_device(
     speed: u32,
     reset: bool,
@@ -9,9 +19,6 @@ pub fn start_device(
     let mut config = mcp2221::Config::default();
     config.i2c_speed_hz = speed;
     config.reset_on_open = reset;
-    // For talking to a peripheral we might want a higher timeout, but for
-    // scanning the bus, a short timeout is good since it allows us to scan all
-    // addresses more quickly.
     config.timeout = Duration::from_millis(timeout);
     let dev = match mcp2221::Handle::open_first(&config) {
         Ok(x) => x,
@@ -22,6 +29,14 @@ pub fn start_device(
     Ok(dev)
 }
 
+/**
+ * Scans the Bus checking for connected devices.
+ * Inputs:
+ *   dev - mcp2221 handle
+ *
+ * Output:
+ *   No output, but a list of found addressess will be sent to stdout
+ */
 pub fn scan_bus(dev: &mut mcp2221::Handle) {
     match dev.check_bus() {
         Ok(()) => (),
@@ -45,6 +60,17 @@ pub fn scan_bus(dev: &mut mcp2221::Handle) {
     }
 }
 
+/**
+ * Write data to a given device.
+ * Inputs:
+ *   dev - mcp2221 handle
+ *   address - Device address in 7bit format
+ *   register - Register that will receive the data
+ *   data - Data to write in u8 format
+ *
+ * Output:
+ *   Error code if there was a problem while writing
+ */
 pub fn write_device(
     dev: &mut mcp2221::Handle,
     address: u8,
@@ -56,6 +82,17 @@ pub fn write_device(
     dev.write_read_address(address, &mut my_data, &mut [0u8])
 }
 
+/**
+ * Read data from a given device.
+ * Inputs:
+ *   dev - mcp2221 handle
+ *   address - Device address in 7bit format
+ *   register - Register that will receive the data
+ *   expected - number of bytes to read
+ *
+ * Output:
+ *   Error code if there was a problem while writing or a vector of u8 containing the data
+ */
 pub fn read_device(
     dev: &mut mcp2221::Handle,
     address: u8,

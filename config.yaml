@@ -1,6 +1,8 @@
 iocc:
   address: 0x20
   verbose: true
+  # Maximum I2C Speed in Hz supported:
+  #   i2c_speed_hz: 400000
   i2c_speed_hz: 400000 #in Hz
   reset_on_open: false
   timeout: 10 # in milliseconds
@@ -12,8 +14,16 @@ ont:
   reset_on_open: false
   timeout: 10 # in milliseconds
   ont:
+    # Available ports:
+    #   porta
+    #   portb
     port: porta
+    # Available Pins:
+    #    pin0 to pin7
     pin: pin3
+    # Available directions:
+    #    input
+    #    output
     direction: output
   ethernet:
     port: porta
@@ -31,8 +41,44 @@ powmon:
   reset_on_open: false
   timeout: 10 # in milliseconds
   chip:
+    # Available modes:
+    #   PowerDown
+    #   ShuntVoltageTriggered
+    #   BusVoltageTriggered
+    #   ShuntAndBusTriggered
+    #   PowerDown2
+    #   ShuntVoltageContinuous
+    #   BusVoltageContinuous
+    #   ShuntAndBusContinuous
     mode: BusVoltageContinuous
+    # Available Vbusct values:
+    #   _140_us
+    #   _204_us
+    #   _332_us
+    #   _588_us
+    #   _1_1_ms
+    #   _2_116_ms
+    #   _4_156_ms
+    #   _8_244_ms
     vbusct: _1_1_ms
+    # Available vscht values:
+    #   _140_us
+    #   _204_us
+    #   _332_us
+    #   _588_us
+    #   _1_1_ms
+    #   _2_116_ms
+    #   _4_156_ms
+    #   _8_244_ms
     vscht: _1_1_ms
+    # Available average values:
+    #   _1
+    #   _4
+    #   _16
+    #   _64
+    #   _128
+    #   _256
+    #   _512
+    #   _1024
     average: _16
     maxcurrent: 5.0 #in Amps
