@@ -86,7 +86,10 @@ pub fn read_config() -> Iocc {
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: cannot read {}: {e}; using defaults", path.display());
+            eprintln!(
+                "Warning: cannot read {}: {e}; using defaults",
+                path.display()
+            );
             return Iocc::default();
         }
     };

@@ -55,7 +55,7 @@ By default only root can access the USBIOExtender (MCP2221, VID `04d8`, PID `00d
 sudo $(which iocc) setup-udev
 ```
 
-This writes `/etc/udev/rules.d/99-mcp2221.rules` and reloads udev. Then unplug and replug the board. The rule grants access to all users (`MODE="0666"`); edit the file to use `GROUP="plugdev", MODE="0660"` if you prefer to restrict it to a group.
+This writes `/etc/udev/rules.d/60-mcp2221.rules` and reloads udev. Then unplug and replug the board. The rule uses `TAG+="uaccess"`, which grants access to the user logged in locally on the machine. It does not apply to SSH sessions or system services; for those, edit the file and use `GROUP="plugdev", MODE="0660"` (and add the user to that group).
 
 ## Usage
 Instructions on how to use the software.
@@ -82,6 +82,15 @@ Instructions on how to use the software.
 
 - Get Help on Plugins:
 ![Plugin Help](images/plugin_help.gif)
+
+## Writing plugins
+Plugins are built separately from iocc and cannot run on their own: they are always started by iocc (e.g. `iocc powmon status`). iocc itself works without any plugin. The contract between them is:
+
+- **Name and location:** the executable must be named `iocc-<name>` (`.exe` on Windows, name restricted to letters, digits, `-` and `_`) and live in the same folder as `iocc` or in the `PATH`. `iocc <name> <args>` runs it with the remaining arguments and returns its exit code.
+- **Configuration:** the shared file `config.yaml` lives in the system config folder (`<config dir>/iocc/config.yaml`, e.g. `~/.config/iocc/config.yaml` on Linux). Each plugin reads its own top-level section (e.g. `powmon:`) and should fall back to its own defaults if the section is missing. iocc only reads the `iocc:` section and creates the file on first run.
+- **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
+- **Device access:** iocc does not open the USBIOExtender when running a plugin, so the plugin opens the MCP2221 itself.
+- **Errors:** write errors to `stderr` and exit with a non-zero code.
 
 ## Contributing
 How to contribute to the project? How to open pull requests?

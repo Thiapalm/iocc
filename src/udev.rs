@@ -2,13 +2,15 @@ use std::fs;
 use std::io::ErrorKind;
 use std::process::Command;
 
-const RULE_PATH: &str = "/etc/udev/rules.d/99-mcp2221.rules";
-const RULE: &str = r#"SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", MODE="0666"
-KERNEL=="hidraw*", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", MODE="0666"
+// Must sort before 73-seat-late.rules for TAG+="uaccess" to take effect
+const RULE_PATH: &str = "/etc/udev/rules.d/60-mcp2221.rules";
+const OLD_RULE_PATH: &str = "/etc/udev/rules.d/99-mcp2221.rules";
+const RULE: &str = r#"SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", TAG+="uaccess"
 "#;
 
 /**
- * Installs the udev rule that lets non-root users access the USBIOExtender (MCP2221)
+ * Installs the udev rule that lets the logged-in user (uaccess) access the USBIOExtender (MCP2221)
  * and reloads udev. Requires root.
  */
 pub fn setup_udev() -> Result<(), String> {
@@ -24,8 +26,17 @@ pub fn setup_udev() -> Result<(), String> {
     })?;
     println!("Rule installed at {RULE_PATH}");
 
+    // Rule previously suggested in the README, would keep the device open to all users
+    if fs::remove_file(OLD_RULE_PATH).is_ok() {
+        println!("Removed old rule {OLD_RULE_PATH}");
+    }
+
     run_udevadm(&["control", "--reload-rules"])?;
-    run_udevadm(&["trigger"])?;
+    run_udevadm(&[
+        "trigger",
+        "--subsystem-match=usb",
+        "--subsystem-match=hidraw",
+    ])?;
     println!("udev reloaded. Unplug and replug the USBIOExtender board.");
     Ok(())
 }

@@ -6,68 +6,82 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+const PLUGIN_PREFIX: &str = "iocc-";
+
 /**
- * Execute plugin
+ * Directories searched for plugins, in priority order: the folder of the iocc
+ * executable first, then every PATH entry. The current directory is deliberately
+ * not searched to avoid running untrusted executables.
  */
-pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) {
+fn plugin_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    {
+        dirs.push(dir);
+    }
+    if let Some(paths) = env::var_os("PATH") {
+        dirs.extend(env::split_paths(&paths));
+    }
+    dirs
+}
+
+/**
+ * Plugin names are restricted so they can never escape the search directories
+ */
+fn is_valid_plugin_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/**
+ * Execute plugin and return its exit code
+ */
+pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
+    if !is_valid_plugin_name(plugin_name) {
+        eprintln!("Invalid plugin name '{plugin_name}'.");
+        return 1;
+    }
+
     //define required plugin name for detection (iocc-xxxxx)
-    let plugin_bin = {
-        let base = format!("iocc-{}", plugin_name);
-        if cfg!(windows) {
-            format!("{}.exe", base)
-        } else {
-            base
-        }
+    let plugin_bin = if cfg!(windows) {
+        format!("{PLUGIN_PREFIX}{plugin_name}.exe")
+    } else {
+        format!("{PLUGIN_PREFIX}{plugin_name}")
     };
 
-    //Search plugin on main folder
-    let paths = vec![
-        env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf())),
-        Some(env::current_dir().unwrap()),
-        env::var("PATH").ok().map(|_| PathBuf::from("")),
-    ];
+    let Some(full_path) = plugin_dirs()
+        .into_iter()
+        .map(|dir| dir.join(&plugin_bin))
+        .find(|path| path.is_file())
+    else {
+        eprintln!("Plugin '{plugin_bin}' not found.");
+        return 1;
+    };
 
-    //If found, execute it
-    for path_opt in paths.into_iter().flatten() {
-        let full_path = path_opt.join(&plugin_bin);
-        if full_path.exists() && full_path.is_file() {
-            if config.is_verbose() {
-                println!("[host] Executando plugin: {}", full_path.display());
-            }
-            let mut child = Command::new(full_path)
-                .args(args)
-                .stdout(Stdio::inherit())
-                .spawn()
-                .expect("Erro ao executar plugin");
-
-            let _ = child.wait();
-            return;
-        }
+    if config.is_verbose() {
+        println!("[host] Running plugin: {}", full_path.display());
     }
 
-    //search plugin on PATH and execute it if found
-    if let Ok(paths) = env::var("PATH") {
-        for path in env::split_paths(&paths) {
-            let full_path = path.join(&plugin_bin);
-            if full_path.exists() && full_path.is_file() {
-                if config.is_verbose() {
-                    println!("[host] Executando plugin (PATH): {}", full_path.display());
-                }
-                let mut child = Command::new(full_path)
-                    .args(args)
-                    .stdout(Stdio::inherit())
-                    .spawn()
-                    .expect("Erro ao executar plugin");
-
-                let _ = child.wait();
-                return;
-            }
-        }
+    let mut command = Command::new(&full_path);
+    command
+        .args(args)
+        .stdout(Stdio::inherit())
+        .env("IOCC_HOST", "1");
+    if let Some(path) = config_path() {
+        command.env("IOCC_CONFIG", path);
     }
 
-    eprintln!("Plugin '{}' not found.", plugin_bin);
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("Could not run plugin {}: {e}", full_path.display());
+            1
+        }
+    }
 }
 
 /**
@@ -76,52 +90,35 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) {
 pub fn list_plugins() -> Vec<String> {
     let mut found = BTreeSet::new();
 
-    let candidate_dirs = vec![
-        env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf())),
-        Some(env::current_dir().unwrap()),
-    ];
-
-    for path_opt in candidate_dirs.into_iter().flatten() {
-        if let Ok(entries) = fs::read_dir(path_opt) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
-                        if file_name.starts_with("iocc-") {
-                            let base_name = file_name
-                                .strip_suffix(".exe")
-                                .unwrap_or(file_name)
-                                .replacen("iocc-", "", 1);
-                            found.insert(base_name);
-                        }
-                    }
-                }
+    for dir in plugin_dirs() {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
             }
-        }
-    }
-
-    if let Ok(paths) = env::var("PATH") {
-        for path in env::split_paths(&paths) {
-            if let Ok(entries) = fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Some(file_name) = path.file_name().and_then(OsStr::to_str) {
-                            if file_name.starts_with("iocc-") {
-                                let base_name = file_name
-                                    .strip_suffix(".exe")
-                                    .unwrap_or(file_name)
-                                    .replacen("iocc-", "", 1);
-                                found.insert(base_name);
-                            }
-                        }
-                    }
-                }
+            if let Some(file_name) = path.file_name().and_then(OsStr::to_str)
+                && let Some(name) = file_name.strip_prefix(PLUGIN_PREFIX)
+            {
+                found.insert(name.strip_suffix(".exe").unwrap_or(name).to_string());
             }
         }
     }
 
     found.into_iter().collect()
+}
+
+/**
+ * Text listing the detected plugins, appended to the help output
+ */
+pub fn plugins_help() -> String {
+    let plugins = list_plugins();
+    if plugins.is_empty() {
+        "No Plugin detected.".to_string()
+    } else {
+        let list: Vec<String> = plugins.iter().map(|p| format!("  {p}")).collect();
+        format!("Detected Plugins:\n{}", list.join("\n"))
+    }
 }
