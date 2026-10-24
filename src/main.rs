@@ -10,6 +10,8 @@ use config::*;
 mod plugin;
 use plugin::*;
 
+mod udev;
+
 #[derive(Parser)]
 #[command(name = "iocc", version, about = "IOExtender Control Center, MCP2221 communication control via plugins", long_about = None)]
 struct Cli {
@@ -24,6 +26,8 @@ struct Cli {
 enum Commands {
     /// Show local Status
     Status,
+    /// Install the Linux udev rule for USB access without root (run with sudo)
+    SetupUdev,
     /// Scan Bus for connected devices
     Scan,
     /// Write to device
@@ -95,6 +99,15 @@ fn main() {
     // clap parsing
     let cli = Cli::parse();
 
+    // Handled before config/device access, since it must work without USB permissions
+    if let Some(Commands::SetupUdev) = &cli.command {
+        if let Err(err) = udev::setup_udev() {
+            eprintln!("Error: {err}");
+            exit(1);
+        }
+        return;
+    }
+
     // config file parsing
     let config = read_config();
     if config.is_verbose() {
@@ -121,6 +134,7 @@ fn main() {
 
     //process received command
     match &cli.command {
+        Some(Commands::SetupUdev) => unreachable!("handled before device start"),
         Some(Commands::Status) => {
             println!("Status: Device Functional.");
         }

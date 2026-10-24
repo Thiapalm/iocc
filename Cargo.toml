@@ -16,3 +16,8 @@ serde_yaml = "0.9"
 embedded-hal = "0.2.6"
 mcp2221 = "0.1.1"
 num-traits = "0.2"
+dirs = "6"
+
+[[bin]]
+name = "iocc"
+path = "src/main.rs"

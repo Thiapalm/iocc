@@ -28,7 +28,7 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 1.0.0 - First Version
 
 ## Installation
-There is no installation required, however, for better usage it is recommended to add the software folder into the system PATH. All plugins must be located into the same folder as the main iocc program and config.yaml file.
+There is no installation required, however, for better usage it is recommended to add the software folder into the system PATH. All plugins must be located into the same folder as the main iocc program. The `config.yaml` file is created automatically on first run in the system config folder (Linux: `~/.config/iocc/config.yaml`, macOS: `~/Library/Application Support/iocc/`, Windows: `%APPDATA%\iocc\`).
 
 ### Prerequisites
 - This software requires USBIOExtender hardware to work properly (https://github.com/Thiapalm/usbioextender).
@@ -45,8 +45,17 @@ There is no installation required, however, for better usage it is recommended t
    ```rust
    cargo build --release.
    ```
-4. Copy the generated executable and config.yaml files into the same folder
+4. Copy the generated executable into a folder of your choice
 5. Add the folder into the system PATH
+
+### Linux USB permissions
+By default only root can access the USBIOExtender (MCP2221, VID `04d8`, PID `00dd`). Without a udev rule, iocc fails with `USB error: Access denied (insufficient permissions)`. Install the rule once (after `cargo install` or `cargo build`):
+
+```bash
+sudo $(which iocc) setup-udev
+```
+
+This writes `/etc/udev/rules.d/99-mcp2221.rules` and reloads udev. Then unplug and replug the board. The rule grants access to all users (`MODE="0666"`); edit the file to use `GROUP="plugdev", MODE="0660"` if you prefer to restrict it to a group.
 
 ## Usage
 Instructions on how to use the software.
