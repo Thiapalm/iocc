@@ -6,7 +6,7 @@ touch the USB device, so they run without hardware.
 | Plugin | What it shows |
 |---|---|
 | `iocc-demo` | views (stream, table, text), all argument kinds, confirm, shared and exclusive actions |
-| `iocc-wave` | simulated signals built for pinning: two watchable panels, a shared action that keeps watches live and an exclusive one that pauses them |
+| `iocc-wave` | simulated signals built for pinning: two chart panels you can pin together, a shared action that keeps watches live and an exclusive one that pauses them |
 
 ## Run
 
@@ -26,14 +26,17 @@ the list; use `↑↓` to reach the demos by name.
 1. Tab **3** (Plugins): select `demo`, choose *Live sensors* with `[`/`]` and press `p`.
 2. Still on `demo`, select *Ports* and press `p` again: two panels from the same plugin.
 3. Select `wave`, press `p` to pin *Live signals*.
-4. Switch to tabs **1** or **2**: the *Watches* column keeps all three panels updating.
-5. Back on tab 3, with `wave` selected, press `→` to focus the actions:
+4. Still on `wave`, use `]` to reach *Voltage graph* and *Current graph* and press `p`
+   on each: the two charts stay visible at the same time (`m` switches the series of
+   the selected chart).
+5. Switch to tabs **1** or **2**: the *Watches* column keeps all four panels updating.
+6. Back on tab 3, with `wave` selected, press `→` to focus the actions:
    - **Apply load for 4s** is `shared`: the watches keep updating while it runs.
    - **Use the device for 3s** is exclusive: the watch titles change to `paused` and
      the streams restart after it finishes.
-6. Press `g` to record the pinned metrics to `iocc-record-<timestamp>.csv` in the
+7. Press `g` to record the pinned metrics to `iocc-record-<timestamp>.csv` in the
    current directory (`g` again stops; `IOCC_RECORD=path` chooses the file).
-7. `P` unpins everything, `q` quits.
+8. `P` unpins everything, `q` quits.
 
 Pinning is per panel, and a plugin may contribute several. When the column cannot show
 all of them, `PageUp`/`PageDown` scrolls the Watches window; `,`/`.` reorder and `x`
