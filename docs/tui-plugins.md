@@ -48,7 +48,7 @@ continuously — the panel would keep showing `paused`/`stopped`.
 | `protocol` | must be `1` |
 | `views[].label` | panel title; defaults to the view `id` |
 | `views[].kind` | `text` (default), `table`, `metrics` or `chart` |
-| `views[].metric` | for `chart`: metric name to plot; defaults to the first metric of the output |
+| `views[].metric` | for `chart`: the series shown first; defaults to the first metric of the output (`m` cycles) |
 | `views[].refresh_ms` | optional; without it the view is loaded once and kept until `R` reloads the manifests. Ignored when `stream` is set |
 | `views[].stream` | `true`: start the command once and read one update per stdout line |
 | `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
@@ -215,7 +215,7 @@ simply stops producing rows.
 - `text`: shown as is (streaming text keeps the last 200 lines).
 - `table`: `{"columns": ["Port", "State"], "rows": [["a", "on"], ["b", 0]]}`
 - `metrics`: `{"metrics": [{"name": "Voltage", "value": 12.1, "unit": "V"}]}`, shown with a sparkline of the last 120 samples.
-- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the series (default: the first metric); `unit` is shown with the current value, min and max. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
+- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
 
 ```json
 {"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
@@ -269,5 +269,5 @@ the full walkthrough, including using the broker from another terminal.
 | all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `PageUp`/`PageDown` scroll the Watches column, `q` quit |
 | Scan | arrows move, `Enter` opens the address in Registers, `s` rescan, `i` device info |
 | Registers | `↑↓` select, `Enter` write byte, `r` read, `p` poll, `a`/`g`/`n` address/start/count, `m` read-only |
-| Plugins | `↑↓` plugin, `[`/`]` panel, `Enter`/`→` actions, `Esc` back, `p` pin/unpin, `x` unpin, `,`/`.` reorder, `z` zoom, `g` CSV, `Ctrl+↑`/`Ctrl+↓` scroll panel, `P` unpin all, `R` reload manifests |
+| Plugins | `↑↓` plugin, `[`/`]` panel, `Enter`/`→` actions, `Esc` back, `p` pin/unpin, `x` unpin, `,`/`.` reorder, `z` zoom, `g` CSV, `m` next metric on a chart panel, `Ctrl+↑`/`Ctrl+↓` scroll panel, `P` unpin all, `R` reload manifests |
 | Log | `↑↓` scroll, `c` clear |

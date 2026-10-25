@@ -105,6 +105,8 @@ pub struct App {
     pub views: HashMap<String, ViewData>,
     pending: HashMap<String, Instant>,
     pub history: HashMap<String, VecDeque<f64>>,
+    /// Metric drawn by each chart panel (keyed by view tag); `m` cycles it
+    pub chart_metric: HashMap<String, String>,
     /// Vertical offset of each panel (keyed by view tag)
     pub scroll: HashMap<String, u16>,
     pub action_out: Option<(bool, String)>,
@@ -190,6 +192,7 @@ impl App {
             views: HashMap::new(),
             pending: HashMap::new(),
             history: HashMap::new(),
+            chart_metric: HashMap::new(),
             scroll: HashMap::new(),
             action_out: None,
             running_actions: HashSet::new(),
@@ -246,6 +249,41 @@ impl App {
         let plugin = self.selected_plugin()?;
         let view = self.selected_view()?;
         Some(view_tag(&plugin.name, &view.id))
+    }
+
+    /**
+     * Switches a chart panel between the metrics of the last sample (`m`),
+     * starting from the one the manifest selects
+     */
+    fn cycle_chart_metric(&mut self) {
+        let Some(plugin) = self.selected_plugin() else {
+            return;
+        };
+        let Some(view) = plugin.manifest.views.get(self.view_sel) else {
+            return;
+        };
+        if view.kind != ViewKind::Chart {
+            return;
+        }
+        let tag = view_tag(&plugin.name, &view.id);
+        let initial = view.metric.clone();
+        let names: Vec<String> = match self.views.get(&tag).map(|d| &d.content) {
+            Some(ViewContent::Metrics(metrics)) => metrics.iter().map(|m| m.name.clone()).collect(),
+            _ => return,
+        };
+        if names.is_empty() {
+            return;
+        }
+        let current = self
+            .chart_metric
+            .get(&tag)
+            .cloned()
+            .or(initial)
+            .and_then(|name| names.iter().position(|n| *n == name))
+            .unwrap_or(0);
+        let next = (current + 1) % names.len();
+        self.chart_metric.insert(tag, names[next].clone());
+        self.status = format!("graph: {} ({}/{})", names[next], next + 1, names.len());
     }
 
     // ---- requests -------------------------------------------------------
@@ -906,6 +944,7 @@ impl App {
         self.plugins_loaded = false;
         self.views.clear();
         self.scroll.clear();
+        self.chart_metric.clear();
         self.pending.remove("load");
         self.view_sel = 0;
         self.zoom = false;
@@ -1073,6 +1112,7 @@ impl App {
                 }
             }
             KeyCode::Char('g') => self.toggle_recording(),
+            KeyCode::Char('m') => self.cycle_chart_metric(),
             KeyCode::Char('P') => {
                 let count = self.pinned.len();
                 self.pinned.clear();
@@ -1564,6 +1604,81 @@ mod tests {
             screen.contains("time") && screen.contains("1.40"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn chart_cycles_metrics_with_m() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Graph".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Current".into()),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let metrics = vec![
+            Metric {
+                name: "Voltage".into(),
+                value: 12.0,
+                unit: Some("V".into()),
+            },
+            Metric {
+                name: "Current".into(),
+                value: 1.4,
+                unit: Some("A".into()),
+            },
+            Metric {
+                name: "Power".into(),
+                value: 16.8,
+                unit: Some("W".into()),
+            },
+        ];
+        for metric in &metrics {
+            let h = app
+                .history
+                .entry(format!("{tag}:{}", metric.name))
+                .or_default();
+            h.extend([1.0, 2.0, 3.0]);
+        }
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(metrics),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        assert!(screen.contains("Current: 1.400 A"), "{screen}");
+        assert!(screen.contains("m: next (2/3)"), "{screen}");
+
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let screen = render(&app);
+        assert!(screen.contains("Power: 16.800 W"), "{screen}");
+        assert!(screen.contains("m: next (3/3)"), "{screen}");
+
+        // Wraps around to the first metric
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let screen = render(&app);
+        assert!(screen.contains("Voltage: 12.000 V"), "{screen}");
+        assert!(screen.contains("m: next (1/3)"), "{screen}");
     }
 
     #[test]

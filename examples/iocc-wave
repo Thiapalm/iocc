@@ -36,7 +36,7 @@ case "$1" in
   "views": [
     {"id": "live", "label": "Live signals", "kind": "metrics", "stream": true,
      "command": ["stream"]},
-    {"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
+    {"id": "graph", "label": "Signals graph", "kind": "chart", "metric": "Current",
      "stream": true, "command": ["graph"]},
     {"id": "stats", "label": "Window stats", "kind": "table", "device": "shared",
      "refresh_ms": 2000, "command": ["stats"]},
@@ -99,7 +99,8 @@ This plugin is a fake instrument: it never touches the USB device.
 
 Try this:
   1. press p here to pin "Live signals"  (it becomes a Watch)
-  2. press ] to open "Current graph" and p to pin the line chart too
+  2. press ] to open "Signals graph", m cycles Voltage/Current/Power,
+     p pins the line chart too
   3. press [ or ] to pick another panel and p to pin it too
   4. select the other demo plugin and pin one of its panels
   5. switch to another tab: all watches keep updating
@@ -108,7 +109,7 @@ Try this:
      "paused" and restart when it finishes
 
 Press g to record the pinned metrics to CSV.
-Press z to zoom the graph and see its axes.
+Press z to zoom the graph and see its axes; m switches the series.
 Press P on the Plugins tab to unpin everything.
 TEXT
     ;;

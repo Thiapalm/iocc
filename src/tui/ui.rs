@@ -496,10 +496,16 @@ fn draw_chart(
     block: Block<'_>,
     area: Rect,
 ) {
-    let metric = match view.metric.as_deref() {
+    let chosen = app
+        .chart_metric
+        .get(tag)
+        .map(String::as_str)
+        .or(view.metric.as_deref());
+    let metric = match chosen {
         Some(name) => metrics.iter().find(|m| m.name == name),
         None => metrics.first(),
-    };
+    }
+    .or_else(|| metrics.first());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(metric) = metric else {
@@ -535,6 +541,7 @@ fn draw_chart(
             format!("   min {min:.3}  max {max:.3}  ({} samples)", history.len()),
             Style::new().fg(DIM),
         ),
+        Span::styled(metric_hint(metrics, metric), Style::new().fg(DIM)),
     ]);
     if inner.height < 5 || inner.width < 24 {
         let [head, spark] =
@@ -587,6 +594,21 @@ fn draw_chart(
                 .labels([axis_value(lo), axis_value((lo + hi) / 2.0), axis_value(hi)]),
         );
     frame.render_widget(chart, chart_area);
+}
+
+/**
+ * Position of the charted metric and the key that switches it, for panels
+ * whose plugin publishes more than one metric
+ */
+fn metric_hint(metrics: &[Metric], current: &Metric) -> String {
+    if metrics.len() < 2 {
+        return String::new();
+    }
+    let pos = metrics
+        .iter()
+        .position(|m| m.name == current.name)
+        .unwrap_or(0);
+    format!("  m: next ({}/{})", pos + 1, metrics.len())
 }
 
 fn axis_value(value: f64) -> String {
