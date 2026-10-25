@@ -1,6 +1,6 @@
 [package]
 name = "iocc"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -16,6 +16,8 @@ serde_yaml = "0.9"
 embedded-hal = "0.2.6"
 mcp2221 = "0.1.1"
 dirs = "6"
+ratatui = "0.30.2"
+serde_json = "1.0.154"
 
 [[bin]]
 name = "iocc"

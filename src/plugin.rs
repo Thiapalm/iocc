@@ -54,6 +54,47 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /**
+ * Full path of the plugin executable `iocc-<name>`, if it exists
+ */
+pub fn find_plugin(plugin_name: &str) -> Option<PathBuf> {
+    if !is_valid_plugin_name(plugin_name) {
+        return None;
+    }
+    let plugin_bin = if cfg!(windows) {
+        format!("{PLUGIN_PREFIX}{plugin_name}.exe")
+    } else {
+        format!("{PLUGIN_PREFIX}{plugin_name}")
+    };
+    plugin_dirs()
+        .into_iter()
+        .map(|dir| dir.join(&plugin_bin))
+        .find(|path| path.is_file() && is_executable(path))
+}
+
+/**
+ * Builds the command that runs a plugin, with the environment the host provides
+ */
+pub fn plugin_command(path: &Path, args: &[String]) -> Command {
+    plugin_command_with(path, args, None)
+}
+
+/**
+ * Same as `plugin_command`, also pointing the plugin at the TUI device broker
+ * (`IOCC_SOCKET`) when one is available
+ */
+pub fn plugin_command_with(path: &Path, args: &[String], socket: Option<&Path>) -> Command {
+    let mut command = Command::new(path);
+    command.args(args).env("IOCC_HOST", "1");
+    if let Some(config) = config_path() {
+        command.env("IOCC_CONFIG", config);
+    }
+    if let Some(socket) = socket {
+        command.env("IOCC_SOCKET", socket);
+    }
+    command
+}
+
+/**
  * Execute plugin and return its exit code
  */
 pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
@@ -62,19 +103,8 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
         return 1;
     }
 
-    //define required plugin name for detection (iocc-xxxxx)
-    let plugin_bin = if cfg!(windows) {
-        format!("{PLUGIN_PREFIX}{plugin_name}.exe")
-    } else {
-        format!("{PLUGIN_PREFIX}{plugin_name}")
-    };
-
-    let Some(full_path) = plugin_dirs()
-        .into_iter()
-        .map(|dir| dir.join(&plugin_bin))
-        .find(|path| path.is_file() && is_executable(path))
-    else {
-        eprintln!("Plugin '{plugin_bin}' not found.");
+    let Some(full_path) = find_plugin(plugin_name) else {
+        eprintln!("Plugin '{PLUGIN_PREFIX}{plugin_name}' not found.");
         return 1;
     };
 
@@ -82,12 +112,7 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
         println!("[host] Running plugin: {}", full_path.display());
     }
 
-    let mut command = Command::new(&full_path);
-    command.args(args).env("IOCC_HOST", "1");
-    if let Some(path) = config_path() {
-        command.env("IOCC_CONFIG", path);
-    }
-
+    let mut command = plugin_command(&full_path, args);
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
@@ -148,5 +173,44 @@ mod tests {
         assert!(is_valid_plugin_name("ont-2_x"));
         assert!(!is_valid_plugin_name(""));
         assert!(!is_valid_plugin_name("../evil"));
+    }
+
+    /**
+     * The command line must keep handing the device to the plugin: only the TUI
+     * (which owns the chip) passes IOCC_SOCKET
+     */
+    #[test]
+    fn only_the_tui_points_plugins_at_the_broker() {
+        let path = Path::new("/bin/true");
+        let socket = |command: &Command| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == "IOCC_SOCKET")
+                .and_then(|(_, value)| value)
+                .map(OsStr::to_os_string)
+        };
+
+        assert_eq!(socket(&plugin_command(path, &[])), None);
+        assert_eq!(
+            socket(&plugin_command_with(
+                path,
+                &[],
+                Some(Path::new("/tmp/x.sock"))
+            )),
+            Some("/tmp/x.sock".into())
+        );
+        // Other host variables are unchanged in both cases
+        for command in [
+            plugin_command(path, &[]),
+            plugin_command_with(path, &[], Some(Path::new("/tmp/x.sock"))),
+        ] {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == "IOCC_HOST")
+                    .and_then(|(_, value)| value),
+                Some(OsStr::new("1"))
+            );
+        }
     }
 }

@@ -1,0 +1,126 @@
+#!/bin/sh
+# Second example iocc plugin, for `iocc tui`: simulated signals, no hardware needed.
+# Install: copy next to the iocc binary or anywhere in PATH, keeping the name iocc-wave.
+#
+# It exists to exercise the TUI features that `iocc-demo` only hints at:
+#   - a streaming panel (pin it with `p` and keep it visible on every tab)
+#   - a shared action that runs while the stream keeps updating
+#   - an exclusive action that pauses the stream and restarts it afterwards
+
+# One JSON metrics line for sample number $1
+sample() {
+    awk -v i="$1" 'BEGIN {
+        v = 12.0 + 0.40 * sin(i / 5)
+        a = 1.50 + 0.50 * sin(i / 5 + 1.2) + 0.10 * sin(i / 1.7)
+        printf "{\"metrics\":[{\"name\":\"Voltage\",\"value\":%.3f,\"unit\":\"V\"},{\"name\":\"Current\",\"value\":%.3f,\"unit\":\"A\"},{\"name\":\"Power\",\"value\":%.3f,\"unit\":\"W\"}]}\n", v, a, v * a
+    }'
+}
+
+# Same sample as human readable text (used by actions, whose output is captured)
+sample_text() {
+    awk -v i="$1" 'BEGIN {
+        v = 12.0 + 0.40 * sin(i / 5)
+        a = 1.50 + 0.50 * sin(i / 5 + 1.2) + 0.10 * sin(i / 1.7)
+        printf "  %.3f V  %.3f A  %.3f W\n", v, a, v * a
+    }'
+}
+
+case "$1" in
+--iocc-manifest)
+    cat <<'JSON'
+{
+  "protocol": 1,
+  "title": "Wave lab (demo)",
+  "version": "0.1.0",
+  "description": "Simulated signals to test pinning, streams and shared actions",
+  "views": [
+    {"id": "live", "label": "Live signals", "kind": "metrics", "stream": true,
+     "command": ["stream"]},
+    {"id": "stats", "label": "Window stats", "kind": "table", "device": "shared",
+     "refresh_ms": 2000, "command": ["stats"]},
+    {"id": "guide", "label": "What to try", "kind": "text", "device": "shared",
+     "command": ["guide"]}
+  ],
+  "actions": [
+    {"id": "load", "label": "Apply load for 4s (keeps watches live)", "device": "shared",
+     "command": ["load"]},
+    {"id": "hold", "label": "Use the device for 3s (pauses watches)",
+     "command": ["hold"]},
+    {"id": "reset", "label": "Reset the signals", "device": "shared",
+     "command": ["reset"]}
+  ]
+}
+JSON
+    ;;
+stream)
+    # One JSON metrics object per line, forever (the TUI keeps this running)
+    i=0
+    while :; do
+        # Stop when the reader goes away (e.g. `iocc wave watch | head`)
+        sample "$i" || exit 0
+        i=$((i + 1))
+        sleep 0.2
+    done
+    ;;
+watch)
+    # Same output as `stream`, for testing the broker from the command line:
+    #   IOCC_SOCKET=/tmp/iocc.sock iocc wave watch
+    i=0
+    while :; do
+        # Stop when the reader goes away (e.g. `iocc wave watch | head`)
+        sample "$i" || exit 0
+        i=$((i + 1))
+        sleep 0.2
+    done
+    ;;
+stats)
+    # A snapshot, refreshed by the TUI every 2s
+    t=$(date +%s)
+    awk -v t="$t" 'BEGIN {
+        v = 12.0 + 0.40 * sin(t % 7)
+        a = 1.50 + 0.50 * sin((t % 5) + 1.2)
+        printf "{\"columns\":[\"Signal\",\"Min\",\"Max\",\"Now\",\"Unit\"],\"rows\":[[\"Voltage\",\"11.600\",\"12.400\",\"%.3f\",\"V\"],[\"Current\",\"0.900\",\"2.100\",\"%.3f\",\"A\"],[\"Power\",\"10.440\",\"26.040\",\"%.3f\",\"W\"]]}\n", v, a, v * a
+    }'
+    ;;
+guide)
+    cat <<'TEXT'
+This plugin is a fake instrument: it never touches the USB device.
+
+Try this:
+  1. press p here to pin "Live signals"  (it becomes a Watch)
+  2. select the other demo plugin and pin its panel too
+  3. switch to another tab: both watches keep updating
+  4. run "Apply load for 4s": it is shared, so the watches stay live
+  5. run "Use the device for 3s": it is exclusive, so the watches show
+     "paused" and restart when it finishes
+
+Press P on the Plugins tab to unpin everything.
+TEXT
+    ;;
+load)
+    echo "load applied for 4s (shared action, watches keep sampling)"
+    if [ -n "${IOCC_SOCKET:-}" ]; then
+        echo "broker socket: $IOCC_SOCKET"
+    else
+        echo "no IOCC_SOCKET: running without the TUI broker"
+    fi
+    i=0
+    while [ "$i" -lt 8 ]; do
+        sample_text "$i"
+        i=$((i + 1))
+        sleep 0.5
+    done
+    echo "load removed"
+    ;;
+hold)
+    echo "simulating a plugin that opens the MCP2221 itself (exclusive)"
+    sleep 3
+    echo "device released: the watches should restart"
+    ;;
+reset)
+    echo "signals reset"
+    ;;
+*)
+    echo "usage: iocc-wave {--iocc-manifest|stream|watch|stats|guide|load|hold|reset}"
+    ;;
+esac
