@@ -650,11 +650,20 @@ dependencies = [
  "clap",
  "dirs",
  "embedded-hal",
+ "iocc-bus",
  "mcp2221",
  "ratatui",
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "iocc-bus"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

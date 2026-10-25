@@ -1,4 +1,5 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use iocc_bus::Bus;
 
 use std::process::exit;
 mod comm;
@@ -16,6 +17,9 @@ mod udev;
 #[derive(Parser)]
 #[command(name = "iocc", version, about = "IOExtender Control Center, MCP2221 communication control via plugins", long_about = None)]
 struct Cli {
+    /// Use the device broker of a running `iocc tui` instead of opening the device
+    #[arg(long, global = true)]
+    via_tui: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -139,15 +143,39 @@ fn main() {
     match &cli.command {
         Some(Commands::SetupUdev) => unreachable!("handled before device start"),
         Some(Commands::Tui) => {
+            if cli.via_tui {
+                eprintln!("Error: --via-tui cannot be used with `tui`");
+                exit(2);
+            }
             if let Err(err) = tui::run(&config) {
                 eprintln!("Error: {err}");
                 exit(1);
+            }
+        }
+        Some(Commands::Status) if cli.via_tui => {
+            let mut bus = connect_broker();
+            match bus.status() {
+                Ok(info) => println!("Status: Device Functional.\n{info}"),
+                Err(err) => {
+                    eprintln!("Error: {err}");
+                    exit(1);
+                }
             }
         }
         Some(Commands::Status) => {
             if let Err(err) = device_status(&mut open_device()) {
                 eprintln!("Error: {err}");
                 exit(1);
+            }
+        }
+        Some(Commands::Scan) if cli.via_tui => {
+            let mut bus = connect_broker();
+            match bus.scan() {
+                Ok(scan) => print!("{}", scan_report(&scan.info, &scan.devices)),
+                Err(err) => {
+                    eprintln!("Error: {err}");
+                    exit(1);
+                }
             }
         }
         Some(Commands::Scan) => {
@@ -157,6 +185,13 @@ fn main() {
             }
         }
         Some(Commands::External(args)) => {
+            if cli.via_tui {
+                eprintln!(
+                    "Error: --via-tui only applies to status/scan/read/write; \
+                     plugins use the broker through IOCC_SOCKET"
+                );
+                exit(2);
+            }
             if let Some(cmd) = args.first() {
                 exit(run_plugin(cmd, &args[1..], &config));
             } else {
@@ -169,7 +204,13 @@ fn main() {
             register,
             data,
         }) => {
-            if let Err(err) = write_device(&mut open_device(), *address, *register, data) {
+            if cli.via_tui {
+                let mut bus = connect_broker();
+                if let Err(err) = bus.write(*address, *register, data) {
+                    eprintln!("Error: {err}");
+                    exit(1);
+                }
+            } else if let Err(err) = write_device(&mut open_device(), *address, *register, data) {
                 eprintln!("Error: {err}");
                 exit(1);
             }
@@ -182,7 +223,15 @@ fn main() {
             if config.is_verbose() {
                 println!("[host] Reading device: {}", *address);
             }
-            match read_device(&mut open_device(), *address, *register, *expected as usize) {
+            let result = if cli.via_tui {
+                connect_broker()
+                    .read(*address, *register, *expected as usize)
+                    .map_err(|e| e.to_string())
+            } else {
+                read_device(&mut open_device(), *address, *register, *expected as usize)
+                    .map_err(|e| e.to_string())
+            };
+            match result {
                 Ok(data) => {
                     for byte in data.iter() {
                         print!("{:#04X} ", byte);
@@ -197,6 +246,20 @@ fn main() {
         }
         None => {
             build_cli(true).print_help().unwrap();
+        }
+    }
+}
+
+/**
+ * Opens the broker of a running TUI, exiting with a clear message when it is
+ * unreachable.
+ */
+fn connect_broker() -> Bus {
+    match Bus::connect() {
+        Ok(bus) => bus,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            exit(1);
         }
     }
 }
@@ -218,5 +281,29 @@ mod tests {
     fn i2c_address_range() {
         assert_eq!(parse_i2c_address("7F"), Ok(0x7F));
         assert!(parse_i2c_address("80").is_err());
+    }
+
+    #[test]
+    fn broker_flag_is_opt_in() {
+        let matches = build_cli(false)
+            .try_get_matches_from(["iocc", "scan", "--via-tui"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        assert!(cli.via_tui);
+        assert!(matches!(cli.command, Some(Commands::Scan)));
+
+        let matches = build_cli(false)
+            .try_get_matches_from(["iocc", "scan"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        assert!(!cli.via_tui);
+    }
+
+    #[test]
+    fn scan_report_keeps_the_grid() {
+        let report = scan_report("device info", &[0x20, 0x4A]);
+        assert!(report.starts_with("device info\n"));
+        assert_eq!(report.lines().count(), 9);
+        assert!(report.contains("0x20") && report.contains("0x4a"));
     }
 }

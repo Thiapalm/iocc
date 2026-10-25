@@ -1,5 +1,5 @@
 use super::manifest::cell_text;
-use super::{App, TABS, ViewContent, view_tag};
+use super::{App, TABS, ViewContent, WATCH_PANEL_H, view_tag};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -49,7 +49,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Some(false) => ("○", ERR, "disconnected"),
         None => ("○", DIM, "connecting"),
     };
-    let title = Line::from(vec![
+    let mut spans = vec![
         Span::raw(" iocc "),
         Span::styled(dot, Style::new().fg(color)),
         Span::raw(format!(
@@ -57,7 +57,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             app.params.speed / 1000,
             app.params.timeout
         )),
-    ]);
+    ];
+    if app.is_recording() {
+        spans.push(Span::styled("● REC ", Style::new().fg(ERR).bold()));
+    }
+    let title = Line::from(spans);
     let tabs = Tabs::new(
         TABS.iter()
             .enumerate()
@@ -70,13 +74,18 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let keys = match app.tab {
+    let mut keys = match app.tab {
         0 => "←↑↓→ move · Enter open · s scan · i info",
         1 => "↑↓ · Enter write · r read · p poll · a/g/n set · m read-only",
         2 if app.action_focus => "↑↓ select · Enter run · Esc back",
-        2 => "↑↓ plugin · Enter/→ actions · p pin · P unpin · R reload",
+        2 if app.zoom => "z close · Ctrl+↑↓ scroll · g CSV · P unpin · R reload",
+        2 => "↑↓ plugin · [ ] panel · p pin · x unpin · ,/. order · g CSV · z zoom · R reload",
         _ => "↑↓ scroll · c clear",
-    };
+    }
+    .to_string();
+    if !app.pinned.is_empty() {
+        keys.push_str(" · PgUp/PgDn watches");
+    }
     let line = Line::from(vec![
         Span::styled(format!(" {} ", app.status), Style::new().fg(Color::Cyan)),
         Span::styled(format!("│ {keys} │ Tab · q quit"), Style::new().fg(DIM)),
@@ -85,14 +94,32 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /**
- * Panels pinned with `p`, kept visible on every tab while other plugins are used
+ * Panels pinned with `p`, kept visible on every tab while other plugins are used.
+ * When they do not fit, the column shows a window scrolled with PageUp/PageDown.
  */
 fn draw_pinned(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = Block::bordered().title(" Watches (p/P) ");
-    let inner = outer.inner(area);
+    let total = app.pinned.len();
+    if total == 0 {
+        return;
+    }
+    let inner = Block::bordered().inner(area);
+    let visible = ((inner.height / WATCH_PANEL_H) as usize).clamp(1, total);
+    let start = app.watch_scroll.min(total - visible);
+    let shown = &app.pinned[start..start + visible];
+    let title = if visible < total {
+        format!(
+            " Watches (p/P) {}-{}/{} ",
+            start + 1,
+            start + visible,
+            total
+        )
+    } else {
+        " Watches (p/P) ".to_string()
+    };
+    let outer = Block::bordered().title(title);
     frame.render_widget(outer, area);
-    let areas = Layout::vertical(vec![Constraint::Fill(1); app.pinned.len()]).split(inner);
-    for (pinned, area) in app.pinned.iter().zip(areas.iter()) {
+    let areas = Layout::vertical(vec![Constraint::Fill(1); visible]).split(inner);
+    for (pinned, area) in shown.iter().zip(areas.iter()) {
         draw_view(frame, app, &pinned.plugin, &pinned.view, *area);
     }
 }
@@ -224,6 +251,13 @@ fn draw_plugins(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
+    if app.zoom
+        && let Some(plugin) = app.selected_plugin()
+        && let Some(view) = plugin.manifest.views.get(app.view_sel)
+    {
+        draw_view(frame, app, &plugin.name, view, area);
+        return;
+    }
     let [list_area, detail] =
         Layout::horizontal([Constraint::Length(24), Constraint::Min(30)]).areas(area);
 
@@ -344,6 +378,15 @@ fn draw_plugins(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest::View, area: Rect) {
     let tag = view_tag(plugin, &view.id);
     let data = app.views.get(&tag);
+    let scroll = app.scroll.get(&tag).copied().unwrap_or(0);
+    let selected = app.tab == 2
+        && app.selected_plugin().is_some_and(|p| {
+            p.name == plugin
+                && p.manifest
+                    .views
+                    .get(app.view_sel)
+                    .is_some_and(|v| v.id == view.id)
+        });
     let age = data
         .map(|d| format!(" · {}s ago", d.updated.elapsed().as_secs()))
         .unwrap_or_default();
@@ -360,20 +403,31 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
     };
     let block = Block::new()
         .borders(Borders::TOP)
-        .border_style(Style::new().fg(DIM))
-        .title(format!(" {}{state} ", view.title()));
+        .border_style(if selected {
+            Style::new().fg(Color::Cyan)
+        } else {
+            Style::new().fg(DIM)
+        })
+        .title(format!(
+            " {}{}{state} ",
+            if selected { "▸ " } else { "" },
+            view.title()
+        ));
     let Some(data) = data else {
         frame.render_widget(Paragraph::new("loading...".fg(DIM)).block(block), area);
         return;
     };
     match &data.content {
         ViewContent::Text(text) => frame.render_widget(
-            Paragraph::new(text.trim_end().to_string()).block(block),
+            Paragraph::new(text.trim_end().to_string())
+                .scroll((scroll, 0))
+                .block(block),
             area,
         ),
         ViewContent::Error(e) => frame.render_widget(
             Paragraph::new(e.trim_end().to_string().fg(ERR))
                 .wrap(Wrap { trim: false })
+                .scroll((scroll, 0))
                 .block(block),
             area,
         ),
@@ -382,6 +436,7 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
             let table = Table::new(
                 t.rows
                     .iter()
+                    .skip(scroll as usize)
                     .map(|r| Row::new(r.iter().map(|c| Cell::from(cell_text(c))))),
                 widths,
             )

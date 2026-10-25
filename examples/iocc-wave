@@ -88,12 +88,14 @@ This plugin is a fake instrument: it never touches the USB device.
 
 Try this:
   1. press p here to pin "Live signals"  (it becomes a Watch)
-  2. select the other demo plugin and pin its panel too
-  3. switch to another tab: both watches keep updating
-  4. run "Apply load for 4s": it is shared, so the watches stay live
-  5. run "Use the device for 3s": it is exclusive, so the watches show
+  2. press [ or ] to pick another panel and p to pin it too
+  3. select the other demo plugin and pin one of its panels
+  4. switch to another tab: all watches keep updating
+  5. run "Apply load for 4s": it is shared, so the watches stay live
+  6. run "Use the device for 3s": it is exclusive, so the watches show
      "paused" and restart when it finishes
 
+Press g to record the pinned metrics to CSV.
 Press P on the Plugins tab to unpin everything.
 TEXT
     ;;

@@ -1,4 +1,5 @@
 use embedded_hal::blocking::i2c::{Read, Write};
+use mcp2221::{Direction, PinState};
 use std::time::Duration;
 
 /**
@@ -55,6 +56,28 @@ pub fn device_status(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
 }
 
 /**
+ * Formats the device information and the address grid shown by a bus scan.
+ * Shared by the native `scan` command and by `--via-tui`.
+ */
+pub fn scan_report(info: &str, found: &[u8]) -> String {
+    let mut out = format!("{info}\n");
+    for base_address in (0..=127u8).step_by(16) {
+        for offset in 0..=15 {
+            let address = base_address + offset;
+            if !(0x03..=0x77).contains(&address) {
+                out.push_str("    ");
+            } else if found.contains(&address) {
+                out.push_str(&format!("0x{address:02x}"));
+            } else {
+                out.push_str(" -- ");
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/**
  * Scans the Bus checking for connected devices.
  * Inputs:
  *   dev - mcp2221 handle
@@ -66,23 +89,50 @@ pub fn device_status(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
  *   Error if the bus or the device cannot be queried
  */
 pub fn scan_bus(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
-    println!("{}", check_device(dev)?);
-
+    let info = check_device(dev)?;
     let found = scan_addresses(dev);
-    for base_address in (0..=127u8).step_by(16) {
-        for offset in 0..=15 {
-            let address = base_address + offset;
-            if !(0x03..=0x77).contains(&address) {
-                print!("    ");
-            } else if found.contains(&address) {
-                print!("0x{:02x}", address);
-            } else {
-                print!(" -- ");
-            }
-        }
-        println!();
-    }
+    print!("{}", scan_report(&info, &found));
     Ok(())
+}
+
+/**
+ * Reads one of the four MCP2221 GPIO pins.
+ * Inputs:
+ *   dev - mcp2221 handle
+ *   pin - GPIO index (0-3)
+ *
+ * Output:
+ *   true for a high level, false for low, or an error when the pin is not
+ *   configured as GPIO.
+ */
+pub fn gpio_read(dev: &mut mcp2221::Handle, pin: usize) -> Result<bool, String> {
+    if pin > 3 {
+        return Err(format!("GPIO pin must be between 0 and 3, got {pin}"));
+    }
+    let pins = dev.get_pin_values().map_err(|e| e.to_string())?;
+    match [pins.gp0, pins.gp1, pins.gp2, pins.gp3][pin] {
+        PinState::High => Ok(true),
+        PinState::Low => Ok(false),
+        state => Err(format!("GPIO {pin} is not configured as GPIO ({state:?})")),
+    }
+}
+
+/**
+ * Drives one of the four MCP2221 GPIO pins, keeping the configuration of the
+ * other pins.
+ * Inputs:
+ *   dev - mcp2221 handle
+ *   pin - GPIO index (0-3)
+ *   value - true for high, false for low
+ */
+pub fn gpio_write(dev: &mut mcp2221::Handle, pin: usize, value: bool) -> Result<(), String> {
+    if pin > 3 {
+        return Err(format!("GPIO pin must be between 0 and 3, got {pin}"));
+    }
+    let mut config = dev.get_gpio_config().map_err(|e| e.to_string())?;
+    config.set_direction(pin, Direction::Output);
+    config.set_value(pin, value);
+    dev.configure_gpio(&config).map_err(|e| e.to_string())
 }
 
 /**

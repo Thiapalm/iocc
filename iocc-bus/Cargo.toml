@@ -1,0 +1,13 @@
+[package]
+name = "iocc-bus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+authors = ["Thiago Palmieri <palmieri@adastra.aleeas.com>"]
+description = "Client for the iocc TUI device broker"
+repository = "https://github.com/Thiapalm/iocc"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
