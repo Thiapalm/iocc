@@ -1,6 +1,6 @@
 iocc:
   address: 0x20
-  verbose: true
+  verbose: false
   # Maximum I2C Speed in Hz supported:
   #   i2c_speed_hz: 400000
   i2c_speed_hz: 400000 #in Hz

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer};
 use std::fmt;
-use std::fs;
+use std::{fs, path::PathBuf};
 
 #[derive(Debug)]
 pub struct HexU8(pub u8);
@@ -11,8 +11,13 @@ impl<'de> Deserialize<'de> for HexU8 {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let value =
-            u8::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)?;
+        let value = u8::from_str_radix(
+            s.strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(&s),
+            16,
+        )
+        .map_err(serde::de::Error::custom)?;
         Ok(HexU8(value))
     }
 }
@@ -25,9 +30,11 @@ impl fmt::Display for HexU8 {
 
 #[derive(Debug, Deserialize)]
 struct RootConfig {
+    #[serde(default)]
     iocc: Iocc,
 }
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 #[allow(dead_code)]
 pub struct Iocc {
     address: HexU8,
@@ -37,23 +44,69 @@ pub struct Iocc {
     timeout: u64,
 }
 
-/**
- * Reads and parses configuration file (config.yaml) into Iocc structure
- * The configuratin file is shared among all plugins
- */
-pub fn read_config() -> Iocc {
-    let config_content = fs::read_to_string("config.yaml").unwrap_or_default();
-    let parsed: Result<RootConfig, _> = serde_yaml::from_str(&config_content);
+// Template written on first run; includes the sections used by plugins
+const DEFAULT_CONFIG: &str = include_str!("../config.yaml");
 
-    match parsed {
-        Ok(cfg) => cfg.iocc,
-        Err(_) => Iocc {
+impl Default for Iocc {
+    fn default() -> Self {
+        Iocc {
             address: HexU8(0x20),
             verbose: false,
             i2c_speed_hz: 400_000,
             reset_on_open: false,
             timeout: 10,
-        },
+        }
+    }
+}
+
+/**
+ * Returns the system config path (Linux: ~/.config/iocc/config.yaml,
+ * macOS: ~/Library/Application Support/iocc/config.yaml,
+ * Windows: %APPDATA%\iocc\config.yaml)
+ */
+pub fn config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("iocc").join("config.yaml"))
+}
+
+/**
+ * Reads and parses configuration file (config.yaml) into Iocc structure
+ * The configuration file is shared among all plugins and is created with
+ * default values if it does not exist
+ */
+pub fn read_config() -> Iocc {
+    let Some(path) = config_path() else {
+        eprintln!("Warning: system config directory not found; using defaults");
+        return Iocc::default();
+    };
+
+    if !path.exists() {
+        let created = match path.parent() {
+            Some(dir) => fs::create_dir_all(dir),
+            None => Ok(()),
+        }
+        .and_then(|_| fs::write(&path, DEFAULT_CONFIG));
+        if let Err(e) = created {
+            eprintln!("Warning: could not create {}: {e}", path.display());
+        }
+    }
+
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "Warning: cannot read {}: {e}; using defaults",
+                path.display()
+            );
+            return Iocc::default();
+        }
+    };
+
+    match serde_yaml::from_str::<RootConfig>(&content) {
+        Ok(cfg) => cfg.iocc,
+        Err(e) => {
+            eprintln!("Warning: invalid {}: {e}; using defaults", path.display());
+            Iocc::default()
+        }
     }
 }
 

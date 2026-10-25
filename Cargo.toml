@@ -1,18 +1,22 @@
 [package]
 name = "iocc"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-author = ["Thiago Palmieri <palmieri@adastra.aleeas.com>"]
+authors = ["Thiago Palmieri <palmieri@adastra.aleeas.com>"]
 description = "This is a command line tool for communicating with I2C devices connected to the USBIOExtender"
 readme = "README.md"
 repository = "https://github.com/Thiapalm/iocc"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
-clap_complete = "4.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 embedded-hal = "0.2.6"
 mcp2221 = "0.1.1"
-num-traits = "0.2"
+dirs = "6"
+
+[[bin]]
+name = "iocc"
+path = "src/main.rs"
