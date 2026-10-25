@@ -36,6 +36,8 @@ pub enum ViewKind {
     Text,
     Table,
     Metrics,
+    /// Full line chart of one metric over the history kept by the TUI
+    Chart,
 }
 
 /// Read only panel: the command is run (periodically if `refresh_ms` is set) and its stdout rendered.
@@ -50,6 +52,8 @@ pub struct View {
     pub refresh_ms: Option<u64>,
     #[serde(default)]
     pub stream: bool,
+    /// Metric drawn by a `chart` view; defaults to the first metric of the output
+    pub metric: Option<String>,
     /// `shared` means the command uses the TUI device broker (IOCC_SOCKET) instead of
     /// opening the USB device, so it can run while other plugins also use the bus
     #[serde(default)]
@@ -253,6 +257,18 @@ mod tests {
         assert_eq!(m.views[0].kind, ViewKind::Metrics);
         assert_eq!(m.views[0].refresh_ms, Some(500));
         assert_eq!(m.actions[0].args[0].kind, ArgKind::Choice);
+    }
+
+    #[test]
+    fn parses_chart_views() {
+        let m = Manifest::parse(
+            r#"{"protocol":1,"views":[{"id":"g","kind":"chart","metric":"Current",
+                 "stream":true,"command":["watch","--json"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(m.views[0].kind, ViewKind::Chart);
+        assert_eq!(m.views[0].metric.as_deref(), Some("Current"));
+        assert!(m.views[0].stream);
     }
 
     #[test]

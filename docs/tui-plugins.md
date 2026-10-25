@@ -47,7 +47,8 @@ continuously — the panel would keep showing `paused`/`stopped`.
 |-------|-------|
 | `protocol` | must be `1` |
 | `views[].label` | panel title; defaults to the view `id` |
-| `views[].kind` | `text` (default), `table` or `metrics` |
+| `views[].kind` | `text` (default), `table`, `metrics` or `chart` |
+| `views[].metric` | for `chart`: metric name to plot; defaults to the first metric of the output |
 | `views[].refresh_ms` | optional; without it the view is loaded once and kept until `R` reloads the manifests. Ignored when `stream` is set |
 | `views[].stream` | `true`: start the command once and read one update per stdout line |
 | `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
@@ -57,8 +58,8 @@ continuously — the panel would keep showing `paused`/`stopped`.
 
 `command` holds the arguments passed to the plugin (without the program name). A view without
 `refresh_ms` is a one-shot snapshot: it is loaded once and kept until `R` reloads the manifests. A
-`stream` view keeps its process running; `text` views append lines (keeping the last 200) while `table`
-and `metrics` views replace their content on every line.
+`stream` view keeps its process running; `text` views append lines (keeping the last 200) while `table`,
+`metrics` and `chart` views replace their content on every line.
 
 ## Sharing the device between plugins
 
@@ -199,6 +200,12 @@ simply stops producing rows.
 - `text`: shown as is (streaming text keeps the last 200 lines).
 - `table`: `{"columns": ["Port", "State"], "rows": [["a", "on"], ["b", 0]]}`
 - `metrics`: `{"metrics": [{"name": "Voltage", "value": 12.1, "unit": "V"}]}`, shown with a sparkline of the last 120 samples.
+- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the series (default: the first metric); `unit` is shown with the current value, min and max. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
+
+```json
+{"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
+ "stream": true, "device": "shared", "command": ["watch", "--json", "--interval-ms", "500"]}
+```
 
 A non zero exit code shows stdout/stderr in red instead.
 

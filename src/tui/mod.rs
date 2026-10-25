@@ -462,20 +462,31 @@ impl App {
             ViewKind::Table => manifest::parse_table(&stdout)
                 .map(ViewContent::Table)
                 .unwrap_or_else(ViewContent::Error),
-            ViewKind::Metrics => match manifest::parse_metrics(&stdout) {
-                Ok(metrics) => {
-                    for m in &metrics {
-                        let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
-                        if h.len() == HISTORY {
-                            h.pop_front();
-                        }
-                        h.push_back(m.value);
+            ViewKind::Metrics => self.metrics_content(tag, &stdout, true),
+            ViewKind::Chart => self.metrics_content(tag, &stdout, false),
+        }
+    }
+
+    /**
+     * Parses a metrics sample, appends it to the history and (for `metrics`
+     * views) feeds the CSV recorder
+     */
+    fn metrics_content(&mut self, tag: &str, stdout: &str, record: bool) -> ViewContent {
+        match manifest::parse_metrics(stdout) {
+            Ok(metrics) => {
+                for m in &metrics {
+                    let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
+                    if h.len() == HISTORY {
+                        h.pop_front();
                     }
-                    self.record_metrics(tag, &metrics);
-                    ViewContent::Metrics(metrics)
+                    h.push_back(m.value);
                 }
-                Err(e) => ViewContent::Error(e),
-            },
+                if record {
+                    self.record_metrics(tag, &metrics);
+                }
+                ViewContent::Metrics(metrics)
+            }
+            Err(e) => ViewContent::Error(e),
         }
     }
 
@@ -804,20 +815,8 @@ impl App {
         }
         let kind = self.view_kind(tag);
         let content = match kind {
-            ViewKind::Metrics => match manifest::parse_metrics(line) {
-                Ok(metrics) => {
-                    for m in &metrics {
-                        let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
-                        if h.len() == HISTORY {
-                            h.pop_front();
-                        }
-                        h.push_back(m.value);
-                    }
-                    self.record_metrics(tag, &metrics);
-                    ViewContent::Metrics(metrics)
-                }
-                Err(e) => ViewContent::Error(e),
-            },
+            ViewKind::Metrics => self.metrics_content(tag, line, true),
+            ViewKind::Chart => self.metrics_content(tag, line, false),
             ViewKind::Table => match manifest::parse_table(line) {
                 Ok(table) => ViewContent::Table(table),
                 Err(e) => ViewContent::Error(e),
@@ -1352,6 +1351,7 @@ mod tests {
             kind: ViewKind::Metrics,
             refresh_ms: None,
             stream: true,
+            metric: None,
             device: DeviceAccess::Exclusive,
         }
     }
@@ -1482,6 +1482,59 @@ mod tests {
         assert!(text.contains(",p,one,Current,A,1.25"));
         assert!(!text.contains("Ignored"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn chart_uses_the_metric_history() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Current graph".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Current".into()),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let history = app.history.entry(format!("{tag}:Current")).or_default();
+        history.extend([1.0, 1.2, 1.4]);
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(vec![Metric {
+                    name: "Current".into(),
+                    value: 1.4,
+                    unit: Some("A".into()),
+                }]),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        assert!(screen.contains("Current: 1.400 A"), "{screen}");
+        assert!(
+            screen.contains("min 1.000") && screen.contains("3 samples"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("time") && screen.contains("1.40"),
+            "{screen}"
+        );
     }
 
     #[cfg(unix)]
