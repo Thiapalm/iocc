@@ -1,7 +1,7 @@
 # `IOExtender Control Center (IOCC)`
 
 <p align=center>
-  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.0.0-red"></a>
+  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.0.1-red"></a>
   <a href="http://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-ApacheV2-green"></a>
  <a href="http://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green"></a>
 </p>
@@ -12,7 +12,7 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 
 ## Features
 - Run from the command line
-- Scan the I2C Bus for connected devices
+- Scan the I2C Bus for connected devices (each address is probed with a 1 byte read, which some devices such as EEPROMs or ADCs may treat as an operation)
 - Configure USBIOExtender IO Pins
 - Communicate with any I2C device connected to USBIOExtender via Read/Write operations
 - Read one or more bytes at the same time (via --expected parameter
@@ -27,12 +27,21 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 
 1.0.0 - First Version
 
+1.0.1
+- Can be installed with `cargo install`
+- `config.yaml` is now created automatically on first run in the system config folder
+- New `setup-udev` command to grant USB access on Linux
+- Plugins now receive `IOCC_HOST` and `IOCC_CONFIG`; plugin contract documented ("Writing plugins")
+- Plugin detection and execution rewritten; plugin name validation
+- General code fixes and refactoring
+- Added `install.sh` installer
+
 ## Installation
 There is no installation required, however, for better usage it is recommended to add the software folder into the system PATH. All plugins must be located into the same folder as the main iocc program. The `config.yaml` file is created automatically on first run in the system config folder (Linux: `~/.config/iocc/config.yaml`, macOS: `~/Library/Application Support/iocc/`, Windows: `%APPDATA%\iocc\`).
 
 ### Prerequisites
 - This software requires USBIOExtender hardware to work properly (https://github.com/Thiapalm/usbioextender).
-- There is no software requirement to use the this cli program, but if you need to compile it, then rust is required (https://www.rust-lang.org/).
+- There is no software requirement to use the this cli program, but if you need to compile it, then rust 1.88 or newer is required (https://www.rust-lang.org/).
 
 
 ### Installation Steps

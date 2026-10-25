@@ -28,7 +28,7 @@ enum Commands {
     Status,
     /// Install the Linux udev rule for USB access without root (run with sudo)
     SetupUdev,
-    /// Scan Bus for connected devices
+    /// Scan Bus for connected devices (probes each address with a 1 byte read)
     Scan,
     /// Write to device
     Write {
@@ -133,10 +133,16 @@ fn main() {
     match &cli.command {
         Some(Commands::SetupUdev) => unreachable!("handled before device start"),
         Some(Commands::Status) => {
-            device_status(&mut open_device());
+            if let Err(err) = device_status(&mut open_device()) {
+                eprintln!("Error: {err}");
+                exit(1);
+            }
         }
         Some(Commands::Scan) => {
-            scan_bus(&mut open_device());
+            if let Err(err) = scan_bus(&mut open_device()) {
+                eprintln!("Error: {err}");
+                exit(1);
+            }
         }
         Some(Commands::External(args)) => {
             if let Some(cmd) = args.first() {

@@ -1,7 +1,8 @@
 [package]
 name = "iocc"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["Thiago Palmieri <palmieri@adastra.aleeas.com>"]
 description = "This is a command line tool for communicating with I2C devices connected to the USBIOExtender"

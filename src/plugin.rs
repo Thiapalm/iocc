@@ -3,15 +3,16 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const PLUGIN_PREFIX: &str = "iocc-";
 
 /**
  * Directories searched for plugins, in priority order: the folder of the iocc
- * executable first, then every PATH entry. The current directory is deliberately
- * not searched to avoid running untrusted executables.
+ * executable first, then every absolute PATH entry. The current directory is
+ * deliberately not searched to avoid running untrusted executables, so empty
+ * and relative PATH entries (which mean the current directory) are skipped.
  */
 fn plugin_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -22,7 +23,7 @@ fn plugin_dirs() -> Vec<PathBuf> {
         dirs.push(dir);
     }
     if let Some(paths) = env::var_os("PATH") {
-        dirs.extend(env::split_paths(&paths));
+        dirs.extend(env::split_paths(&paths).filter(|p| p.is_absolute()));
     }
     dirs
 }
@@ -35,6 +36,21 @@ fn is_valid_plugin_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/**
+ * Whether the file can be executed (execute permission bit on Unix)
+ */
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 /**
@@ -96,13 +112,16 @@ pub fn list_plugins() -> Vec<String> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
+            if !path.is_file() || !is_executable(&path) {
                 continue;
             }
             if let Some(file_name) = path.file_name().and_then(OsStr::to_str)
                 && let Some(name) = file_name.strip_prefix(PLUGIN_PREFIX)
             {
-                found.insert(name.strip_suffix(".exe").unwrap_or(name).to_string());
+                let name = name.strip_suffix(".exe").unwrap_or(name);
+                if is_valid_plugin_name(name) {
+                    found.insert(name.to_string());
+                }
             }
         }
     }

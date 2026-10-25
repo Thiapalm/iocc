@@ -8,6 +8,10 @@ const OLD_RULE_PATH: &str = "/etc/udev/rules.d/99-mcp2221.rules";
 const RULE: &str = r#"SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", TAG+="uaccess"
 KERNEL=="hidraw*", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", TAG+="uaccess"
 "#;
+// Content written by earlier versions at OLD_RULE_PATH; only a file identical to it is removed
+const OLD_RULE: &str = r#"SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", MODE="0666"
+KERNEL=="hidraw*", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="00dd", MODE="0666"
+"#;
 
 /**
  * Installs the udev rule that lets the logged-in user (uaccess) access the USBIOExtender (MCP2221)
@@ -26,9 +30,18 @@ pub fn setup_udev() -> Result<(), String> {
     })?;
     println!("Rule installed at {RULE_PATH}");
 
-    // Rule previously suggested in the README, would keep the device open to all users
-    if fs::remove_file(OLD_RULE_PATH).is_ok() {
-        println!("Removed old rule {OLD_RULE_PATH}");
+    // Rule written by earlier versions, would keep the device open to all users
+    match fs::read_to_string(OLD_RULE_PATH) {
+        Ok(content) if content == OLD_RULE => {
+            if fs::remove_file(OLD_RULE_PATH).is_ok() {
+                println!("Removed old rule {OLD_RULE_PATH}");
+            }
+        }
+        Ok(_) => eprintln!(
+            "Warning: {OLD_RULE_PATH} was not created by iocc and was kept; \
+             remove it manually if it still grants broad access to the device"
+        ),
+        Err(_) => {}
     }
 
     run_udevadm(&["control", "--reload-rules"])?;

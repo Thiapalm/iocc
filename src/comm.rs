@@ -1,5 +1,5 @@
 use embedded_hal::blocking::i2c::{Read, Write};
-use std::{process::exit, time::Duration};
+use std::time::Duration;
 
 /**
  * Initializes the I2C connection towards a given device.
@@ -35,24 +35,19 @@ pub fn start_device(
  *   dev - mcp2221 handle
  *
  * Output:
- *   Exits with code 1 if the bus or the device cannot be queried
+ *   The device information or the error if the bus or the device cannot be queried
  */
-fn check_device(dev: &mut mcp2221::Handle) -> String {
-    let info = dev.check_bus().and_then(|_| dev.get_device_info());
-    match info {
-        Ok(info) => info.to_string(),
-        Err(e) => {
-            eprintln!("Error: {e}");
-            exit(1);
-        }
-    }
+fn check_device(dev: &mut mcp2221::Handle) -> Result<String, mcp2221::Error> {
+    dev.check_bus()?;
+    Ok(dev.get_device_info()?.to_string())
 }
 
 /**
  * Prints the device status and information
  */
-pub fn device_status(dev: &mut mcp2221::Handle) {
-    println!("Status: Device Functional.\n{}", check_device(dev));
+pub fn device_status(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
+    println!("Status: Device Functional.\n{}", check_device(dev)?);
+    Ok(())
 }
 
 /**
@@ -61,11 +56,13 @@ pub fn device_status(dev: &mut mcp2221::Handle) {
  *   dev - mcp2221 handle
  *
  * Output:
- *   No output, but a list of found addresses will be sent to stdout. Reserved
- *   addresses (0x00-0x02 and 0x78-0x7F) are not probed.
+ *   No output value, but a list of found addresses will be sent to stdout. Reserved
+ *   addresses (0x00-0x02 and 0x78-0x7F) are not probed. Each address is probed with a
+ *   1 byte read, which some devices (EEPROMs, ADCs) may treat as an operation.
+ *   Error if the bus or the device cannot be queried
  */
-pub fn scan_bus(dev: &mut mcp2221::Handle) {
-    println!("{}", check_device(dev));
+pub fn scan_bus(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
+    println!("{}", check_device(dev)?);
 
     for base_address in (0..=127u8).step_by(16) {
         for offset in 0..=15 {
@@ -81,6 +78,7 @@ pub fn scan_bus(dev: &mut mcp2221::Handle) {
         }
         println!();
     }
+    Ok(())
 }
 
 /**
