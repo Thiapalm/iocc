@@ -10,6 +10,7 @@ use config::*;
 mod plugin;
 use plugin::*;
 
+mod tui;
 mod udev;
 
 #[derive(Parser)]
@@ -28,6 +29,8 @@ enum Commands {
     Status,
     /// Install the Linux udev rule for USB access without root (run with sudo)
     SetupUdev,
+    /// Open the interactive terminal interface (plugins can add their own panels)
+    Tui,
     /// Scan Bus for connected devices (probes each address with a 1 byte read)
     Scan,
     /// Write to device
@@ -135,6 +138,12 @@ fn main() {
     //process received command
     match &cli.command {
         Some(Commands::SetupUdev) => unreachable!("handled before device start"),
+        Some(Commands::Tui) => {
+            if let Err(err) = tui::run(&config) {
+                eprintln!("Error: {err}");
+                exit(1);
+            }
+        }
         Some(Commands::Status) => {
             if let Err(err) = device_status(&mut open_device()) {
                 eprintln!("Error: {err}");

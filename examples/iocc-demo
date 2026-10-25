@@ -1,0 +1,54 @@
+#!/bin/sh
+# Example iocc plugin that describes itself to `iocc tui` (no hardware needed).
+# Install: copy next to the iocc binary or anywhere in PATH, keeping the name iocc-demo.
+
+case "$1" in
+--iocc-manifest)
+    cat <<'JSON'
+{
+  "protocol": 1,
+  "title": "Demo plugin",
+  "version": "0.1.0",
+  "description": "Shows how a plugin adds panels and actions to the iocc TUI",
+  "views": [
+    {"id": "sensors", "label": "Sensors", "kind": "metrics", "refresh_ms": 1000,
+     "command": ["sensors"]},
+    {"id": "ports", "label": "Ports", "kind": "table", "refresh_ms": 2000,
+     "command": ["ports"]},
+    {"id": "info", "label": "Info", "kind": "text", "command": ["info"]}
+  ],
+  "actions": [
+    {"id": "set", "label": "Set port", "description": "turn a port on or off",
+     "args": [
+       {"name": "port", "label": "Port", "type": "choice", "options": ["a", "b"], "default": "a"},
+       {"name": "state", "label": "State", "type": "choice", "options": ["on", "off"]}
+     ],
+     "command": ["set", "--port", "{port}", "--state", "{state}"]},
+    {"id": "reset", "label": "Reset everything", "confirm": true, "command": ["reset"]}
+  ]
+}
+JSON
+    ;;
+sensors)
+    t=$(date +%s)
+    v=$(( (t % 10) * 100 + 11000 ))
+    printf '{"metrics":[{"name":"Voltage","value":%d.%03d,"unit":"V"},{"name":"Current","value":%d.%d,"unit":"A"}]}\n' \
+        $((v / 1000)) $((v % 1000)) $((t % 5)) $((t % 10))
+    ;;
+ports)
+    echo '{"columns":["Port","State"],"rows":[["a","on"],["b",0]]}'
+    ;;
+info)
+    echo "IOCC_HOST=$IOCC_HOST IOCC_TUI=$IOCC_TUI"
+    echo "config: $IOCC_CONFIG"
+    ;;
+set)
+    echo "port $3 -> $5"
+    ;;
+reset)
+    echo "reset done"
+    ;;
+*)
+    echo "usage: iocc-demo {sensors|ports|info|set|reset}"
+    ;;
+esac

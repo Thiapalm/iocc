@@ -14,6 +14,7 @@
 - `src/comm.rs` – MCP2221 I2C operations (`start_device`, `scan_bus`, `read_device`, `write_device`).
 - `src/config.rs` – loads `config.yaml` from the system config dir via `dirs::config_dir()` (Linux: `~/.config/iocc/config.yaml`). If missing, it is created from the embedded repo `config.yaml` (`include_str!`). Unreadable/invalid files warn on stderr and fall back to defaults (0x20, 400 kHz, timeout 10 ms, non-verbose).
 - `src/plugin.rs` – plugin discovery/execution.
+- `src/tui/` – `iocc tui` (ratatui). `backend.rs` is a thread that owns the MCP2221 and runs plugins (device released before each plugin run); `manifest.rs` is the plugin description protocol (`--iocc-manifest`, see `docs/tui-plugins.md`); `ui.rs` only draws; `mod.rs` holds app state/keys. Plugins add panels/actions by answering the manifest, no iocc recompilation.
 - `src/udev.rs` – `iocc setup-udev` writes `/etc/udev/rules.d/60-mcp2221.rules` (Linux, needs root, `TAG+="uaccess"`; must sort before `73-seat-late.rules`) so the local user can access the USB device.
 
 ## Plugin system

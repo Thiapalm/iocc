@@ -24,6 +24,16 @@ pub fn start_device(
 }
 
 /**
+ * Probes every non reserved address (0x03-0x77) with a 1 byte read and returns
+ * the addresses that answered.
+ */
+pub fn scan_addresses(dev: &mut mcp2221::Handle) -> Vec<u8> {
+    (0x03..=0x77u8)
+        .filter(|&address| dev.read(address, &mut [0u8]).is_ok())
+        .collect()
+}
+
+/**
  * Checks the bus and returns the device information.
  * Inputs:
  *   dev - mcp2221 handle
@@ -31,7 +41,7 @@ pub fn start_device(
  * Output:
  *   The device information or the error if the bus or the device cannot be queried
  */
-fn check_device(dev: &mut mcp2221::Handle) -> Result<String, mcp2221::Error> {
+pub fn check_device(dev: &mut mcp2221::Handle) -> Result<String, mcp2221::Error> {
     dev.check_bus()?;
     Ok(dev.get_device_info()?.to_string())
 }
@@ -58,16 +68,16 @@ pub fn device_status(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
 pub fn scan_bus(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
     println!("{}", check_device(dev)?);
 
+    let found = scan_addresses(dev);
     for base_address in (0..=127u8).step_by(16) {
         for offset in 0..=15 {
             let address = base_address + offset;
             if !(0x03..=0x77).contains(&address) {
                 print!("    ");
-                continue;
-            }
-            match dev.read(address, &mut [0u8]) {
-                Ok(_) => print!("0x{:02x}", address),
-                Err(_) => print!(" -- "),
+            } else if found.contains(&address) {
+                print!("0x{:02x}", address);
+            } else {
+                print!(" -- ");
             }
         }
         println!();
