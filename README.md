@@ -15,17 +15,25 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 - Scan the I2C Bus for connected devices (each address is probed with a 1 byte read, which some devices such as EEPROMs or ADCs may treat as an operation)
 - Configure USBIOExtender IO Pins
 - Communicate with any I2C device connected to USBIOExtender via Read/Write operations
-- Read one or more bytes at the same time (via --expected parameter
-)
+- Read one or more bytes at the same time (`--expected`)
 - Write one or more bytes (use space to separate bytes)
 - Show board Status
 - Can be extended via plugins
 - Can configure default communication parameters via a simple config.yaml file
 - Plugins can also use the same config.yaml file
+- Interactive terminal UI (`iocc tui`): bus scan, register editor, plugin panels and log
+- Plugins add panels and actions through a JSON manifest, with no change or recompilation of iocc
+- Streaming panels (one update per stdout line) and pinning to keep monitoring visible while other plugins run
+- Device broker (`IOCC_SOCKET`) so plugins can share the MCP2221 with the TUI at the same time
 
 ## Version Revision
 
-1.0.0 - First Version
+Unreleased
+- New interactive terminal UI (`iocc tui`) with scan, register editor, plugin panels and log
+- Plugin manifest protocol (`--iocc-manifest`): views (`text`/`table`/`metrics`), streaming views and actions with typed arguments
+- Pinning panels to the *Watches* column and a Unix device broker (`IOCC_SOCKET`) that lets plugins share the bus while the TUI keeps it open
+- Runnable demos without hardware: `examples/iocc-demo`, `examples/iocc-wave` and `examples/tui-demo.sh`
+- Tests now run without hardware (`cargo test`)
 
 1.0.1
 - Can be installed with `cargo install`
@@ -36,26 +44,33 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 - General code fixes and refactoring
 - Added `install.sh` installer
 
+1.0.0 - First Version
+
 ## Installation
-There is no installation required, however, for better usage it is recommended to add the software folder into the system PATH. All plugins must be located into the same folder as the main iocc program. The `config.yaml` file is created automatically on first run in the system config folder (Linux: `~/.config/iocc/config.yaml`, macOS: `~/Library/Application Support/iocc/`, Windows: `%APPDATA%\iocc\`).
+The `config.yaml` file is created automatically on first run in the system config folder (Linux: `~/.config/iocc/config.yaml`, macOS: `~/Library/Application Support/iocc/`, Windows: `%APPDATA%\iocc\`). Plugins are executables named `iocc-<name>`: they are searched next to the `iocc` binary first, then in every absolute `PATH` entry.
 
 ### Prerequisites
 - This software requires USBIOExtender hardware to work properly (https://github.com/Thiapalm/usbioextender).
-- There is no software requirement to use the this cli program, but if you need to compile it, then rust 1.88 or newer is required (https://www.rust-lang.org/).
+- To build from source: Rust 1.88 or newer (https://www.rust-lang.org/).
 
+### Install with the script (recommended)
+```bash
+git clone https://github.com/thiapalm/iocc.git
+cd iocc
+./install.sh
+```
 
-### Installation Steps
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/thiapalm/iocc.git
-   ```
-2. Navigate to the project directory.
-3. Run (make sure you have rust compiler installed)
-   ```rust
-   cargo build --release.
-   ```
-4. Copy the generated executable into a folder of your choice
-5. Add the folder into the system PATH
+It builds in release mode, installs `iocc` (default `~/.local/bin`), copies any `iocc-*` plugin built in `target/release`, and installs the Linux udev rule. Use `--prefix DIR` for another folder, `--no-udev` to skip the rule, or `--uninstall` to remove the binary and plugins.
+
+Make sure the install folder is in `PATH` (the script prints a reminder) and, on Linux, unplug and replug the board after the udev step.
+
+### Build it yourself
+```bash
+cargo build --release
+cargo install --path .   # or copy target/release/iocc to a folder in PATH
+```
+
+Plugins must be in the same folder as `iocc` or in `PATH`; `iocc --help` lists the ones found under *Detected Plugins*.
 
 ### Linux USB permissions
 By default only root can access the USBIOExtender (MCP2221, VID `04d8`, PID `00dd`). Without a udev rule, iocc fails with `USB error: Access denied (insufficient permissions)`. Install the rule once (after `cargo install` or `cargo build`):
@@ -92,13 +107,49 @@ Instructions on how to use the software.
 - Get Help on Plugins:
 ![Plugin Help](images/plugin_help.gif)
 
+### Terminal UI
+
+```bash
+iocc tui
+```
+
+The TUI needs a real terminal (through a pipe or CI it fails with `No such device or address`). It has four tabs, switched with `1`-`4` or `Tab`:
+
+| Tab | What it does |
+|---|---|
+| Scan | probes the bus; `Enter` opens an address in Registers, `s` rescans, `i` shows device info |
+| Registers | reads and writes bytes, `p` enables polling, `m` toggles read-only |
+| Plugins | lists the plugins found, with their panels and actions (`R` reloads the manifests) |
+| Log | host messages |
+
+On the Plugins tab, the panels declared by the plugin are drawn on the right; `Enter`/`→` opens the actions and `Enter` runs the selected one (`Esc` goes back). Press `p` to **pin** the selected plugin panel: it moves to the *Watches* column and stays visible on every tab, including while another plugin runs. `P` unpins everything. Pinning keeps one panel per plugin (its first streaming view, otherwise its first view), so pin two different plugins to watch two panels at once.
+
+Plugins that declare `"device": "shared"` receive `IOCC_SOCKET` and share the MCP2221 with the TUI through a small broker, so a streaming panel can keep sampling while an action from another plugin uses the bus. Actions that open the device themselves (the default) pause the watches while they run. See [docs/tui-plugins.md](docs/tui-plugins.md) for the protocol and the full key list.
+
+The socket lives in `$XDG_RUNTIME_DIR/iocc.sock` (or at the path given by `IOCC_SOCKET`) and is created with mode `0600`. While the TUI is open, another terminal can use any plugin that speaks the protocol through it:
+
+```bash
+IOCC_SOCKET=/run/user/1000/iocc.sock iocc powmon read --json
+```
+
+The native `iocc scan`/`read`/`write` commands always open the device directly; they do not use the broker.
+
+No hardware is needed to try it. The repository ships two demo plugins:
+
+```bash
+cargo build
+./examples/tui-demo.sh
+```
+
+`examples/iocc-demo` covers the manifest basics; `examples/iocc-wave` streams simulated signals and is made for pinning two panels at once, running a shared action (watches stay live) and an exclusive one (watches show `paused` and restart). See [examples/README.md](examples/README.md) for the walkthrough.
+
 ## Writing plugins
 Plugins are built separately from iocc and cannot run on their own: they are always started by iocc (e.g. `iocc powmon status`). iocc itself works without any plugin. The contract between them is:
 
 - **Name and location:** the executable must be named `iocc-<name>` (`.exe` on Windows, name restricted to letters, digits, `-` and `_`) and live in the same folder as `iocc` or in the `PATH`. `iocc <name> <args>` runs it with the remaining arguments and returns its exit code.
 - **Configuration:** the shared file `config.yaml` lives in the system config folder (`<config dir>/iocc/config.yaml`, e.g. `~/.config/iocc/config.yaml` on Linux). Each plugin reads its own top-level section (e.g. `powmon:`) and should fall back to its own defaults if the section is missing. iocc only reads the `iocc:` section and creates the file on first run.
-- **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
-- **Device access:** iocc does not open the USBIOExtender when running a plugin, so the plugin opens the MCP2221 itself.
+- **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. From the TUI it also sets `IOCC_TUI=1`, plus `IOCC_SOCKET` for views and actions declared as `shared`. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
+- **Device access:** from the command line iocc does not open the USBIOExtender when running a plugin, so the plugin opens the MCP2221 itself. The TUI keeps the device open instead: plugins default to `exclusive` (the chip is released, the plugin opens it, streams pause and restart afterwards) and can opt into `shared`, where they talk to the broker through `IOCC_SOCKET` while the TUI serializes the transactions.
 - **Errors:** write errors to `stderr` and exit with a non-zero code.
 - **Terminal UI (optional):** `iocc tui` opens an interactive interface (bus scan, register editor, plugins, log). A plugin adds its own panels and actions by answering `iocc-<name> --iocc-manifest` with a JSON description, with no change or recompilation of iocc. Streaming panels can be pinned (`p`) to stay visible while other plugins run; plugins that declare `"device": "shared"` use the TUI broker (`IOCC_SOCKET`) so monitoring and actions can share the bus. See [docs/tui-plugins.md](docs/tui-plugins.md); `examples/iocc-demo` and `examples/iocc-wave` are runnable demos (no hardware needed) — start them with `./examples/tui-demo.sh`.
 

@@ -17,7 +17,9 @@ From the repository root, after `cargo build`:
 ```
 
 The script puts `examples/` in `PATH` (that is how the TUI finds `iocc-*` executables),
-sets a fixed `IOCC_SOCKET` and starts the TUI.
+sets a fixed `IOCC_SOCKET` and starts the TUI. Set `IOCC=/path/to/iocc` to use another
+binary. Plugins already installed in `PATH` (for example `iocc-powmon`) also appear in
+the list; use `↑↓` to reach the demos by name.
 
 ## What to try
 
@@ -28,19 +30,24 @@ sets a fixed `IOCC_SOCKET` and starts the TUI.
    - **Apply load for 4s** is `shared`: the watches keep updating while it runs.
    - **Use the device for 3s** is exclusive: the watch titles change to `paused` and
      the streams restart after it finishes.
-5. `P` unpins everything.
+5. `P` unpins everything, `q` quits.
+
+Pinning keeps one panel per plugin, and it picks the first `stream` view: that is why
+the demo has two plugins — one panel each. The column height is split evenly between
+the pinned panels.
 
 ## Test the broker from the command line
 
 With the TUI running (the launcher prints the socket path), in another terminal:
 
 ```sh
-IOCC_SOCKET=/tmp/iocc-demo.sock iocc wave watch
+IOCC_SOCKET=/run/user/1000/iocc-demo-1000.sock iocc wave watch
 ```
 
 `iocc wave watch` prints one JSON metrics line per sample and, because it implements the
-broker protocol, reads through the TUI instead of opening the device. Without
-`IOCC_SOCKET` it falls back to reading the device directly.
+broker protocol, reads through the TUI instead of touching the device. Without
+`IOCC_SOCKET` it still runs (the demo is fake), but a real plugin would try to open the
+device and find it busy while the TUI holds it.
 
 The real hardware example is `iocc-powmon`: its README explains the same flow for the
 INA226.
