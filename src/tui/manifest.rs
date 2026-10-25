@@ -23,6 +23,14 @@ pub struct Manifest {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum DeviceAccess {
+    #[default]
+    Exclusive,
+    Shared,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ViewKind {
     #[default]
     Text,
@@ -30,7 +38,8 @@ pub enum ViewKind {
     Metrics,
 }
 
-/// Read only panel: the command is run (periodically if `refresh_ms` is set) and its stdout rendered
+/// Read only panel: the command is run (periodically if `refresh_ms` is set) and its stdout rendered.
+/// With `stream: true` the command is started once and every stdout line updates the panel.
 #[derive(Debug, Clone, Deserialize)]
 pub struct View {
     pub id: String,
@@ -39,6 +48,12 @@ pub struct View {
     #[serde(default)]
     pub kind: ViewKind,
     pub refresh_ms: Option<u64>,
+    #[serde(default)]
+    pub stream: bool,
+    /// `shared` means the command uses the TUI device broker (IOCC_SOCKET) instead of
+    /// opening the USB device, so it can run while other plugins also use the bus
+    #[serde(default)]
+    pub device: DeviceAccess,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
@@ -72,6 +87,8 @@ pub struct Action {
     pub args: Vec<ArgSpec>,
     #[serde(default)]
     pub confirm: bool,
+    #[serde(default)]
+    pub device: DeviceAccess,
     /// Internal: split the first argument on whitespace (used by the generic entry)
     #[serde(skip)]
     pub free_form: bool,
@@ -175,6 +192,7 @@ impl Manifest {
                     command: vec!["--help".into()],
                     args: vec![],
                     confirm: false,
+                    device: DeviceAccess::Exclusive,
                     free_form: false,
                 },
                 Action {
@@ -190,6 +208,7 @@ impl Manifest {
                         default: None,
                     }],
                     confirm: false,
+                    device: DeviceAccess::Exclusive,
                     free_form: true,
                 },
             ],

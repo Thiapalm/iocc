@@ -10,9 +10,9 @@ Nothing is run automatically for them.
 ## How it works
 
 1. The TUI runs `iocc-<name> --iocc-manifest` (3 s timeout, exit code 0, JSON on stdout).
-2. Each **view** is a read only panel: the TUI runs its `command` (every `refresh_ms` if set, otherwise once) and renders stdout.
+2. Each **view** is a read only panel: the TUI runs its `command` (every `refresh_ms` if set, otherwise once) and renders stdout. With `stream: true` the command is started once and every stdout line updates the panel.
 3. Each **action** is something the user triggers: the TUI asks for the declared `args`, replaces `{name}` in `command` and runs it.
-4. The TUI always releases the MCP2221 before running a plugin (the chip accepts one process at a time), so plugins keep opening the device themselves, exactly as with `iocc <name>`.
+4. By default the TUI **releases** the MCP2221 before running a plugin (the chip accepts one process at a time), so the plugin opens the device itself. Plugins that declare `"device": "shared"` instead receive `IOCC_SOCKET` and leave the chip to the TUI broker (see below), which lets monitoring keep running while another plugin uses the bus.
 
 Plugins are started with `IOCC_HOST=1`, `IOCC_CONFIG=<config.yaml>` and, from the TUI, `IOCC_TUI=1`.
 Commands time out after 15 s. Keep view commands fast, since they run while the device is shared.
@@ -26,7 +26,8 @@ Commands time out after 15 s. Keep view commands fast, since they run while the 
   "version": "0.2.0",
   "description": "INA219 readings",
   "views": [
-    {"id": "power", "label": "Power", "kind": "metrics", "refresh_ms": 1000, "command": ["read", "--json"]}
+    {"id": "power", "label": "Power", "kind": "metrics", "stream": true, "device": "shared",
+     "command": ["watch", "--json"]}
   ],
   "actions": [
     {"id": "mode", "label": "Set mode", "description": "change the chip mode",
@@ -42,10 +43,50 @@ Commands time out after 15 s. Keep view commands fast, since they run while the 
 | `protocol` | must be `1` |
 | `views[].kind` | `text` (default), `table` or `metrics` |
 | `views[].refresh_ms` | optional; without it the view is loaded once when the plugin is selected |
+| `views[].stream` | `true`: start the command once and read one update per stdout line |
+| `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
 | `actions[].args[].type` | `text` (default), `number` or `choice` (needs `options`), validated before running |
 | `actions[].confirm` | asks `y` before running (use it for anything destructive) |
+| `actions[].device` | `exclusive` (default) or `shared` |
 
 `command` holds the arguments passed to the plugin (without the program name).
+
+## Sharing the device between plugins
+
+Only one process can open the MCP2221. The TUI keeps it open and exposes a small broker on a Unix
+socket, whose path is passed to plugins as `IOCC_SOCKET` (also exported to manifest requests).
+A plugin that talks through the socket can run **while** other plugins use the bus, and the TUI
+serializes the transactions. This is what makes it possible to watch power consumption while
+another plugin drives GPIO, for example.
+
+Protocol: one JSON object per line, one response line each.
+
+```jsonc
+// request                              // response
+{"id":1,"op":"info"}                   {"id":1,"ok":true,"info":"MCP rev A.6 ..."}
+{"id":2,"op":"read","address":74,"register":2,"count":2}
+                                       {"id":2,"ok":true,"data":[18,171]}
+{"id":3,"op":"write","address":74,"register":5,"data":[1,2]}
+                                       {"id":3,"ok":true}
+// errors: {"id":3,"ok":false,"error":"..."}
+```
+
+`address` is 7 bit, `register` is the register written before reading, `count` is 1..256.
+`info` also needs `address` (any valid one) and returns the chip information.
+
+Rules:
+
+- `shared` views/actions get `IOCC_SOCKET`. If the plugin ignores it and opens the device itself it
+  will fail with "resource busy" while the TUI is running.
+- `exclusive` (default) runs still work: the TUI pauses streaming panels, releases the chip, runs the
+  plugin and restarts the panels afterwards.
+- The socket is only created on Unix; elsewhere shared plugins are skipped.
+
+## Pinning panels
+
+Press `p` on the Plugins tab to **pin** the panel of the selected plugin (preferably a `stream` one).
+Pinned panels stay visible in the *Watches* column on every tab and keep updating while you use
+other plugins. `P` unpins everything.
 
 ## View output formats
 
@@ -71,5 +112,5 @@ iocc tui     # tab 3, Plugins
 | all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `q` quit |
 | Scan | arrows move, `Enter` opens the address in Registers, `s` rescan, `i` device info |
 | Registers | `↑↓` select, `Enter` write byte, `r` read, `p` poll, `a`/`g`/`n` address/start/count, `m` read-only |
-| Plugins | `↑↓` plugin, `Enter`/`→` actions, `Esc` back, `R` reload manifests |
+| Plugins | `↑↓` plugin, `Enter`/`→` actions, `Esc` back, `p` pin panel, `P` unpin all, `R` reload manifests |
 | Log | `↑↓` scroll, `c` clear |

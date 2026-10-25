@@ -75,10 +75,21 @@ pub fn find_plugin(plugin_name: &str) -> Option<PathBuf> {
  * Builds the command that runs a plugin, with the environment the host provides
  */
 pub fn plugin_command(path: &Path, args: &[String]) -> Command {
+    plugin_command_with(path, args, None)
+}
+
+/**
+ * Same as `plugin_command`, also pointing the plugin at the TUI device broker
+ * (`IOCC_SOCKET`) when one is available
+ */
+pub fn plugin_command_with(path: &Path, args: &[String], socket: Option<&Path>) -> Command {
     let mut command = Command::new(path);
     command.args(args).env("IOCC_HOST", "1");
     if let Some(config) = config_path() {
         command.env("IOCC_CONFIG", config);
+    }
+    if let Some(socket) = socket {
+        command.env("IOCC_SOCKET", socket);
     }
     command
 }

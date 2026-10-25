@@ -11,11 +11,12 @@ case "$1" in
   "version": "0.1.0",
   "description": "Shows how a plugin adds panels and actions to the iocc TUI",
   "views": [
-    {"id": "sensors", "label": "Sensors", "kind": "metrics", "refresh_ms": 1000,
-     "command": ["sensors"]},
-    {"id": "ports", "label": "Ports", "kind": "table", "refresh_ms": 2000,
-     "command": ["ports"]},
-    {"id": "info", "label": "Info", "kind": "text", "command": ["info"]}
+    {"id": "live", "label": "Live sensors", "kind": "metrics", "stream": true,
+     "command": ["stream"]},
+    {"id": "ports", "label": "Ports", "kind": "table", "device": "shared",
+     "refresh_ms": 2000, "command": ["ports"]},
+    {"id": "info", "label": "Info", "kind": "text", "device": "shared",
+     "command": ["info"]}
   ],
   "actions": [
     {"id": "set", "label": "Set port", "description": "turn a port on or off",
@@ -24,7 +25,9 @@ case "$1" in
        {"name": "state", "label": "State", "type": "choice", "options": ["on", "off"]}
      ],
      "command": ["set", "--port", "{port}", "--state", "{state}"]},
-    {"id": "reset", "label": "Reset everything", "confirm": true, "command": ["reset"]}
+    {"id": "reset", "label": "Reset everything", "confirm": true, "command": ["reset"]},
+    {"id": "wait", "label": "Run for 3s (keeps watches live)", "device": "shared",
+     "command": ["hold"]}
   ]
 }
 JSON
@@ -34,6 +37,16 @@ sensors)
     v=$(( (t % 10) * 100 + 11000 ))
     printf '{"metrics":[{"name":"Voltage","value":%d.%03d,"unit":"V"},{"name":"Current","value":%d.%d,"unit":"A"}]}\n' \
         $((v / 1000)) $((v % 1000)) $((t % 5)) $((t % 10))
+    ;;
+stream)
+    # One JSON metrics object per line, forever (the TUI keeps this running)
+    while :; do
+        t=$(date +%s)
+        v=$(( (t % 10) * 100 + 11000 ))
+        printf '{"metrics":[{"name":"Voltage","value":%d.%03d,"unit":"V"},{"name":"Current","value":%d.%d,"unit":"A"}]}\n' \
+            $((v / 1000)) $((v % 1000)) $((t % 5)) $((t % 10))
+        sleep 0.2
+    done
     ;;
 ports)
     echo '{"columns":["Port","State"],"rows":[["a","on"],["b",0]]}'
@@ -48,7 +61,12 @@ set)
 reset)
     echo "reset done"
     ;;
+hold)
+    echo "running for 3s without pausing the watches"
+    sleep 3
+    echo "released"
+    ;;
 *)
-    echo "usage: iocc-demo {sensors|ports|info|set|reset}"
+    echo "usage: iocc-demo {stream|ports|info|set|reset|hold}"
     ;;
 esac

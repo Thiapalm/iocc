@@ -23,6 +23,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     draw_header(frame, app, header);
+    let body = if app.pinned.is_empty() {
+        body
+    } else {
+        let [main, watches] =
+            Layout::horizontal([Constraint::Min(50), Constraint::Length(38)]).areas(body);
+        draw_pinned(frame, app, watches);
+        main
+    };
     match app.tab {
         0 => draw_scan(frame, app, body),
         1 => draw_regs(frame, app, body),
@@ -66,7 +74,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         0 => "←↑↓→ move · Enter open · s scan · i info",
         1 => "↑↓ · Enter write · r read · p poll · a/g/n set · m read-only",
         2 if app.action_focus => "↑↓ select · Enter run · Esc back",
-        2 => "↑↓ plugin · Enter/→ actions · R reload",
+        2 => "↑↓ plugin · Enter/→ actions · p pin · P unpin · R reload",
         _ => "↑↓ scroll · c clear",
     };
     let line = Line::from(vec![
@@ -74,6 +82,19 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("│ {keys} │ Tab · q quit"), Style::new().fg(DIM)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/**
+ * Panels pinned with `p`, kept visible on every tab while other plugins are used
+ */
+fn draw_pinned(frame: &mut Frame, app: &App, area: Rect) {
+    let outer = Block::bordered().title(" Watches (p/P) ");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let areas = Layout::vertical(vec![Constraint::Fill(1); app.pinned.len()]).split(inner);
+    for (pinned, area) in app.pinned.iter().zip(areas.iter()) {
+        draw_view(frame, app, &pinned.plugin, &pinned.view, *area);
+    }
 }
 
 fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
@@ -326,10 +347,21 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
     let age = data
         .map(|d| format!(" · {}s ago", d.updated.elapsed().as_secs()))
         .unwrap_or_default();
+    let state = if view.stream {
+        if app.exclusive_running {
+            " · paused".to_string()
+        } else if app.streams.contains(&tag) {
+            format!(" · live{age}")
+        } else {
+            " · stopped".to_string()
+        }
+    } else {
+        age
+    };
     let block = Block::new()
         .borders(Borders::TOP)
         .border_style(Style::new().fg(DIM))
-        .title(format!(" {}{age} ", view.title()));
+        .title(format!(" {}{state} ", view.title()));
     let Some(data) = data else {
         frame.render_widget(Paragraph::new("loading...".fg(DIM)).block(block), area);
         return;

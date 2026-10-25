@@ -100,7 +100,7 @@ Plugins are built separately from iocc and cannot run on their own: they are alw
 - **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
 - **Device access:** iocc does not open the USBIOExtender when running a plugin, so the plugin opens the MCP2221 itself.
 - **Errors:** write errors to `stderr` and exit with a non-zero code.
-- **Terminal UI (optional):** `iocc tui` opens an interactive interface (bus scan, register editor, plugins, log). A plugin adds its own panels and actions by answering `iocc-<name> --iocc-manifest` with a JSON description, with no change or recompilation of iocc. See [docs/tui-plugins.md](docs/tui-plugins.md) and `examples/iocc-demo`.
+- **Terminal UI (optional):** `iocc tui` opens an interactive interface (bus scan, register editor, plugins, log). A plugin adds its own panels and actions by answering `iocc-<name> --iocc-manifest` with a JSON description, with no change or recompilation of iocc. Streaming panels can be pinned (`p`) to stay visible while other plugins run; plugins that declare `"device": "shared"` use the TUI broker (`IOCC_SOCKET`) so monitoring and actions can share the bus. See [docs/tui-plugins.md](docs/tui-plugins.md) and `examples/iocc-demo`.
 
 ## Contributing
 How to contribute to the project? How to open pull requests?

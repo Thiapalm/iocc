@@ -1,12 +1,15 @@
 mod backend;
+#[cfg(unix)]
+mod broker;
 mod manifest;
 mod ui;
 
 use crate::config::Iocc;
 use backend::{DeviceParams, Event as Ev, PluginEntry, Req};
-use manifest::{Action, Metric, TableData, View, ViewKind};
+use manifest::{Action, DeviceAccess, Metric, TableData, View, ViewKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -48,6 +51,11 @@ pub enum PromptKind {
         action: usize,
         values: Vec<String>,
     },
+}
+
+pub struct Pinned {
+    pub plugin: String,
+    pub view: View,
 }
 
 pub struct Prompt {
@@ -98,6 +106,17 @@ pub struct App {
     pub log_scroll: usize,
     pub status: String,
     pub prompt: Option<Prompt>,
+
+    /// Broker socket plugins use to share the device (None off Unix)
+    pub socket: Option<PathBuf>,
+    /// Streaming views currently running
+    pub streams: HashSet<String>,
+    /// Streaming views that ended by themselves; not restarted until the selection changes
+    stream_done: HashSet<String>,
+    /// True while an exclusive action owns the device (monitoring paused)
+    pub exclusive_running: bool,
+    /// Panels kept visible while other plugins are used
+    pub pinned: Vec<Pinned>,
 }
 
 pub fn view_tag(plugin: &str, view: &str) -> String {
@@ -111,7 +130,8 @@ impl App {
             reset: config.is_reset_on_open(),
             timeout: config.get_timeout(),
         };
-        let (tx, rx) = backend::spawn(params);
+        let backend = backend::spawn(params);
+        let (tx, rx, socket) = (backend.tx, backend.rx, backend.socket);
         App {
             tab: 0,
             tx,
@@ -149,6 +169,11 @@ impl App {
             log_scroll: 0,
             status: "Ready".into(),
             prompt: None,
+            socket,
+            streams: HashSet::new(),
+            stream_done: HashSet::new(),
+            exclusive_running: false,
+            pinned: Vec::new(),
         }
     }
 
@@ -203,11 +228,25 @@ impl App {
 
     fn request_view(&mut self, plugin: &str, view: &View) {
         let tag = view_tag(plugin, &view.id);
+        if view.device == DeviceAccess::Shared && self.socket.is_none() {
+            self.views.insert(
+                tag,
+                ViewData {
+                    content: ViewContent::Error(
+                        "this panel needs the device broker (shared device), unavailable here"
+                            .into(),
+                    ),
+                    updated: Instant::now(),
+                },
+            );
+            return;
+        }
         self.pending.insert(tag.clone(), Instant::now());
         self.send(Req::Plugin {
             tag,
             name: plugin.to_string(),
             args: view.command.clone(),
+            shared: view.device == DeviceAccess::Shared,
         });
     }
 
@@ -294,6 +333,13 @@ impl App {
                 args,
                 result,
             } => self.on_plugin_result(tag, name, args, result),
+            Ev::StreamLine { tag, line } => self.on_stream_line(&tag, &line),
+            Ev::StreamEnd {
+                tag,
+                code,
+                stderr,
+                stopped,
+            } => self.on_stream_end(&tag, code, &stderr, stopped),
         }
     }
 
@@ -341,6 +387,7 @@ impl App {
             );
         } else {
             self.running_actions.remove(&tag);
+            self.exclusive_running = false;
             match result {
                 Ok(out) => {
                     let ok = out.code == 0;
@@ -394,42 +441,230 @@ impl App {
             self.request_read();
         }
 
-        if self.tab == 2 {
-            if !self.plugins_loaded {
-                if !self.pending.contains_key("load") {
-                    self.pending.insert("load".into(), Instant::now());
-                    self.send(Req::LoadPlugins);
+        if self.tab == 2 && !self.plugins_loaded && !self.pending.contains_key("load") {
+            self.pending.insert("load".into(), Instant::now());
+            self.send(Req::LoadPlugins);
+        }
+        if self.plugins_loaded && (self.tab == 2 || !self.pinned.is_empty()) {
+            self.tick_views();
+        }
+    }
+
+    /**
+     * Views that must be alive right now: the pinned ones plus the selected plugin
+     */
+    fn wanted_views(&self) -> Vec<(String, View)> {
+        let mut wanted: Vec<(String, View)> = self
+            .pinned
+            .iter()
+            .map(|p| (p.plugin.clone(), p.view.clone()))
+            .collect();
+        if let Some(plugin) = self.selected_plugin() {
+            for view in &plugin.manifest.views {
+                let tag = view_tag(&plugin.name, &view.id);
+                if !wanted.iter().any(|(p, v)| view_tag(p, &v.id) == tag) {
+                    wanted.push((plugin.name.clone(), view.clone()));
                 }
-                return;
             }
-            let Some(plugin) = self.selected_plugin() else {
-                return;
-            };
-            let name = plugin.name.clone();
-            let due: Vec<View> = plugin
-                .manifest
-                .views
-                .iter()
-                .filter(|v| {
-                    let tag = view_tag(&name, &v.id);
-                    if self.pending.contains_key(&tag) {
-                        return false;
-                    }
-                    match (self.views.get(&tag), v.refresh_ms) {
-                        (None, _) => true,
-                        (Some(d), Some(ms)) => d.updated.elapsed() >= Duration::from_millis(ms),
-                        (Some(_), None) => false,
-                    }
-                })
-                .cloned()
-                .collect();
-            for view in due {
-                self.request_view(&name, &view);
+        }
+        wanted
+    }
+
+    fn tick_views(&mut self) {
+        let wanted = self.wanted_views();
+        let tags: HashSet<String> = wanted
+            .iter()
+            .map(|(plugin, view)| view_tag(plugin, &view.id))
+            .collect();
+
+        // Streams that are no longer wanted (selection or tab change)
+        for tag in self.streams.iter().cloned().collect::<Vec<_>>() {
+            if !tags.contains(&tag) {
+                self.send(Req::StreamStop { tag: tag.clone() });
+                self.streams.remove(&tag);
+                self.views.remove(&tag);
+            }
+        }
+        self.stream_done.retain(|tag| tags.contains(tag));
+
+        if self.exclusive_running {
+            return;
+        }
+        for (name, view) in wanted {
+            let tag = view_tag(&name, &view.id);
+            if view.stream {
+                if self.streams.contains(&tag) || self.stream_done.contains(&tag) {
+                    continue;
+                }
+                if view.device == DeviceAccess::Shared && self.socket.is_none() {
+                    continue;
+                }
+                self.streams.insert(tag.clone());
+                self.send(Req::StreamStart {
+                    tag,
+                    name: name.clone(),
+                    args: view.command.clone(),
+                });
+            } else {
+                if self.pending.contains_key(&tag) {
+                    continue;
+                }
+                let due = match (self.views.get(&tag), view.refresh_ms) {
+                    (None, _) => true,
+                    (Some(d), Some(ms)) => d.updated.elapsed() >= Duration::from_millis(ms),
+                    (Some(_), None) => false,
+                };
+                if due {
+                    self.request_view(&name, &view);
+                }
             }
         }
     }
 
+    /**
+     * Keeps a panel visible while other plugins are used (press again to unpin)
+     */
+    fn toggle_pin(&mut self) {
+        let Some(plugin) = self.selected_plugin() else {
+            return;
+        };
+        let name = plugin.name.clone();
+        let Some(view) = plugin
+            .manifest
+            .views
+            .iter()
+            .find(|v| v.stream)
+            .or_else(|| plugin.manifest.views.first())
+            .cloned()
+        else {
+            self.push_log(false, format!("{name} has no panel to pin"));
+            return;
+        };
+        let tag = view_tag(&name, &view.id);
+        if let Some(pos) = self
+            .pinned
+            .iter()
+            .position(|p| view_tag(&p.plugin, &p.view.id) == tag)
+        {
+            self.pinned.remove(pos);
+            self.send(Req::StreamStop { tag: tag.clone() });
+            self.streams.remove(&tag);
+            self.views.remove(&tag);
+            self.push_log(true, format!("unpinned {name}"));
+        } else {
+            let title = view.title().to_string();
+            self.pinned.push(Pinned {
+                plugin: name.clone(),
+                view,
+            });
+            self.push_log(
+                true,
+                format!("pinned {name}: {title} (stays visible on every tab)"),
+            );
+        }
+    }
+
+    // ---- streams ------------------------------------------------------------
+
+    fn stop_streams(&mut self) {
+        for tag in std::mem::take(&mut self.streams) {
+            self.send(Req::StreamStop { tag: tag.clone() });
+            self.views.remove(&tag);
+        }
+    }
+
+    fn view_kind(&self, tag: &str) -> ViewKind {
+        tag.strip_prefix("view:")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(plugin, id)| {
+                self.plugins
+                    .iter()
+                    .find(|p| p.name == plugin)?
+                    .manifest
+                    .views
+                    .iter()
+                    .find(|v| v.id == id)
+                    .map(|v| v.kind)
+            })
+            .unwrap_or_default()
+    }
+
+    fn on_stream_line(&mut self, tag: &str, line: &str) {
+        if line.trim().is_empty() || !self.streams.contains(tag) {
+            return;
+        }
+        let kind = self.view_kind(tag);
+        let content = match kind {
+            ViewKind::Metrics => match manifest::parse_metrics(line) {
+                Ok(metrics) => {
+                    for m in &metrics {
+                        let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
+                        if h.len() == HISTORY {
+                            h.pop_front();
+                        }
+                        h.push_back(m.value);
+                    }
+                    ViewContent::Metrics(metrics)
+                }
+                Err(e) => ViewContent::Error(e),
+            },
+            ViewKind::Table => match manifest::parse_table(line) {
+                Ok(table) => ViewContent::Table(table),
+                Err(e) => ViewContent::Error(e),
+            },
+            ViewKind::Text => {
+                let mut text = match self.views.get(tag).map(|d| &d.content) {
+                    Some(ViewContent::Text(t)) => t.clone(),
+                    _ => String::new(),
+                };
+                text.push_str(line);
+                text.push('\n');
+                if text.lines().count() > 200 {
+                    text = text.lines().skip(1).collect::<Vec<_>>().join("\n") + "\n";
+                }
+                ViewContent::Text(text)
+            }
+        };
+        self.views.insert(
+            tag.to_string(),
+            ViewData {
+                content,
+                updated: Instant::now(),
+            },
+        );
+    }
+
+    fn on_stream_end(&mut self, tag: &str, code: Option<i32>, stderr: &str, stopped: bool) {
+        if stopped {
+            // Paused for an exclusive plugin or a context switch: restart when possible
+            self.streams.remove(tag);
+            self.views.remove(tag);
+            return;
+        }
+        if !self.streams.remove(tag) {
+            return;
+        }
+        self.stream_done.insert(tag.to_string());
+        let message = match (code, stderr.trim()) {
+            (Some(0), _) => "command exited".to_string(),
+            (Some(code), "") => format!("command exited with code {code}"),
+            (Some(code), stderr) => format!("command exited with code {code}: {stderr}"),
+            (None, "") => "command stopped".to_string(),
+            (None, stderr) => format!("command stopped: {stderr}"),
+        };
+        self.push_log(false, message.clone());
+        self.views.insert(
+            tag.to_string(),
+            ViewData {
+                content: ViewContent::Error(message),
+                updated: Instant::now(),
+            },
+        );
+    }
+
     fn reload_plugins(&mut self) {
+        self.stop_streams();
+        self.stream_done.clear();
         self.plugins_loaded = false;
         self.views.clear();
         self.pending.remove("load");
@@ -562,6 +797,13 @@ impl App {
                 self.action_sel = 0;
             }
             KeyCode::Char('R') => self.reload_plugins(),
+            KeyCode::Char('p') => self.toggle_pin(),
+            KeyCode::Char('P') => {
+                self.stop_streams();
+                self.stream_done.clear();
+                self.pinned.clear();
+                self.push_log(true, "all watches unpinned");
+            }
             _ => {}
         }
     }
@@ -640,11 +882,26 @@ impl App {
         if !self.running_actions.insert(tag.clone()) {
             return;
         }
+        let shared = act.device == DeviceAccess::Shared;
+        if shared && self.socket.is_none() {
+            self.push_log(
+                false,
+                "action needs a shared device but no broker socket is available",
+            );
+            self.running_actions.remove(&tag);
+            return;
+        }
+        if !shared {
+            // The plugin opens the chip itself: pause monitoring until it finishes
+            self.exclusive_running = true;
+            self.stop_streams();
+        }
         self.action_out = Some((true, "Running...".into()));
         self.send(Req::Plugin {
             tag,
             name,
             args: act.build_args(values),
+            shared,
         });
     }
 
@@ -774,6 +1031,7 @@ pub fn run(config: &Iocc) -> std::io::Result<()> {
         }
         Ok(())
     })();
+    app.stop_streams();
     ratatui::restore();
     result
 }
@@ -849,7 +1107,32 @@ mod tests {
 
         wait(&mut app, &|a| a.views.len() == 3);
         let screen = render(&app);
-        assert!(screen.contains("Voltage") && screen.contains("IOCC_TUI=1"));
+        assert!(
+            screen.contains("Voltage") && screen.contains("IOCC_TUI=1"),
+            "{screen}"
+        );
+
+        // pinning keeps the live panel (and its stream) alive on other tabs
+        let live = view_tag("demo", "live");
+        app.toggle_pin();
+        assert_eq!(app.pinned.len(), 1);
+        app.set_tab(3);
+        app.tick();
+        let watches = render(&app);
+        assert!(
+            watches.contains("Watches") && watches.contains("Voltage"),
+            "{watches}"
+        );
+        assert!(app.streams.contains(&live));
+
+        // an exclusive action pauses the watch and it restarts afterwards
+        app.continue_action(app.plugin_sel, 0, vec!["b".into(), "on".into()]);
+        wait(&mut app, &|a| {
+            a.action_out
+                .as_ref()
+                .is_some_and(|(ok, t)| *ok && t.contains("b -> on"))
+        });
+        wait(&mut app, &|a| a.streams.contains(&live));
 
         // run "Set port" with a=port, b=state
         app.continue_action(app.plugin_sel, 0, vec!["b".into(), "on".into()]);
