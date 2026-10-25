@@ -1,4 +1,5 @@
 use embedded_hal::blocking::i2c::{Read, Write};
+#[cfg(unix)]
 use mcp2221::{Direction, PinState};
 use std::time::Duration;
 
@@ -105,6 +106,7 @@ pub fn scan_bus(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
  *   true for a high level, false for low, or an error when the pin is not
  *   configured as GPIO.
  */
+#[cfg(unix)]
 pub fn gpio_read(dev: &mut mcp2221::Handle, pin: usize) -> Result<bool, String> {
     if pin > 3 {
         return Err(format!("GPIO pin must be between 0 and 3, got {pin}"));
@@ -125,6 +127,7 @@ pub fn gpio_read(dev: &mut mcp2221::Handle, pin: usize) -> Result<bool, String> 
  *   pin - GPIO index (0-3)
  *   value - true for high, false for low
  */
+#[cfg(unix)]
 pub fn gpio_write(dev: &mut mcp2221::Handle, pin: usize, value: bool) -> Result<(), String> {
     if pin > 3 {
         return Err(format!("GPIO pin must be between 0 and 3, got {pin}"));
