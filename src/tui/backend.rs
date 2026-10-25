@@ -116,7 +116,7 @@ pub struct SharedDevice {
 }
 
 impl SharedDevice {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn new_for_tests(tx: Sender<Event>) -> SharedDevice {
         SharedDevice::new(
             DeviceParams {
@@ -334,7 +334,7 @@ fn stop_streams(streams: &mut HashMap<String, Arc<Mutex<Child>>>, tx: &Sender<Ev
  * Broker socket path for this run (None off Unix)
  */
 pub fn socket_path() -> Option<PathBuf> {
-    super::broker::socket_path()
+    broker::socket_path()
 }
 
 #[cfg(not(unix))]
