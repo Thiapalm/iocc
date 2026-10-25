@@ -1,7 +1,7 @@
 # `IOExtender Control Center (IOCC)`
 
 <p align=center>
-  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.0.1-red"></a>
+  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.1.0-red"></a>
   <a href="http://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-ApacheV2-green"></a>
  <a href="http://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green"></a>
 </p>
@@ -28,7 +28,7 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 
 ## Version Revision
 
-Unreleased
+1.1.0 - Terminal UI
 - New interactive terminal UI (`iocc tui`) with scan, register editor, plugin panels and log
 - Plugin manifest protocol (`--iocc-manifest`): views (`text`/`table`/`metrics`), streaming views and actions with typed arguments
 - Pinning panels to the *Watches* column and a Unix device broker (`IOCC_SOCKET`) that lets plugins share the bus while the TUI keeps it open
