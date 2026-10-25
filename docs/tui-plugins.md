@@ -262,6 +262,26 @@ updating; run `Use the device for 3s` (exclusive) and they show `paused` before
 restarting. Press `g` to record the pinned metrics to CSV. See `examples/README.md` for
 the full walkthrough, including using the broker from another terminal.
 
+## Starter template (Rust)
+
+[`templates/iocc-plugin`](../templates/iocc-plugin) is a standalone crate that already implements this
+contract: a manifest with `metrics`/`chart`/`table`/`text` views and shared/exclusive actions, a bus
+that uses the broker when `IOCC_SOCKET` is set and the MCP2221 otherwise, configuration defaults and
+`save_setting` for the persisted action values, with tests for each part. The register map in
+`src/device.rs` is imaginary: that is the only hardware-specific file to rewrite.
+
+```sh
+templates/new-plugin.sh temp-sensor ../iocc-temp-sensor
+cd ../iocc-temp-sensor
+cargo test
+cargo install --path .
+iocc tui
+```
+
+The helper copies the directory and renames `mydev` in the package, binary, config section and docs.
+The crate depends on [`iocc-bus`](../iocc-bus); outside this repository, swap the `path` dependency for
+the git branch/tag shown in the template README.
+
 ## Keys
 
 | Tab | Keys |

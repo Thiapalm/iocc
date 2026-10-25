@@ -1,0 +1,18 @@
+# Example section for the shared iocc config.yaml.
+#
+# Append it to the iocc config.yaml (Linux: ~/.config/iocc/config.yaml).
+# iocc only creates the file, it never rewrites an
+# existing one; the plugin writes back only `settings.gain`/`settings.threshold`
+# when a TUI action changes them. Missing values fall back to the defaults in
+# src/config.rs.
+mydev:
+  address: 0x4A
+  verbose: false
+  i2c_speed_hz: 400000 # in Hz
+  reset_on_open: false
+  timeout: 10 # in milliseconds
+  settings:
+    # Amplifier gain: 1, 2, 4 or 8
+    gain: 1
+    # Alert threshold in volts
+    threshold: 2.0
