@@ -27,6 +27,7 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 - Pin several panels (even from the same plugin), reorder them, scroll/zoom a panel and record the pinned metrics to CSV
 - Chart panels (`kind: "chart"`) plot one metric over the 120-sample history, with min/max and a compact sparkline fallback
 - Device broker (`IOCC_SOCKET`) so plugins can share the MCP2221 with the TUI at the same time
+- Plugin actions can save their settings in `config.yaml`, so the next run and the next prompt start with the new value
 - `iocc --via-tui` runs the native `status`/`scan`/`read`/`write` through a running TUI, and the `iocc-bus` crate gives plugins a ready made broker client
 
 ## Version Revision

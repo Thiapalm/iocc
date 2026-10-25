@@ -50,7 +50,7 @@ powmon:
     #   ShuntVoltageContinuous
     #   BusVoltageContinuous
     #   ShuntAndBusContinuous
-    mode: BusVoltageContinuous
+    mode: BusVoltageContinuous # `iocc powmon mode` saves the new value here
     # Available Vbusct values:
     #   _140_us
     #   _204_us
@@ -81,4 +81,4 @@ powmon:
     #   _512
     #   _1024
     average: _16
-    maxcurrent: 5.0 #in Amps
+    maxcurrent: 5.0 #in Amps; `iocc powmon calibrate` saves the new value here

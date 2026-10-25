@@ -401,6 +401,18 @@ impl App {
         result: Result<backend::PluginOutput, String>,
     ) {
         let command = format!("iocc {name} {}", args.join(" "));
+        if let Some(plugin) = tag.strip_prefix("describe:") {
+            // A plugin answered a fresh manifest request: keep the new action
+            // defaults without touching the panels or the running streams
+            if let Ok(out) = result
+                && let Some(manifest) = manifest::Manifest::parse(&out.stdout)
+                && let Some(entry) = self.plugins.iter_mut().find(|p| p.name == plugin)
+            {
+                entry.manifest = manifest;
+                entry.described = true;
+            }
+            return;
+        }
         if let Some(rest) = tag.strip_prefix("view:") {
             self.pending.remove(&tag);
             let view_kind = rest
@@ -447,6 +459,11 @@ impl App {
                     }
                     self.push_log(ok, format!("{command} -> exit {}", out.code));
                     self.action_out = Some((ok, text));
+                    if ok {
+                        // An action may have saved configuration (powmon does):
+                        // reload its manifest so the next prompt shows the new value
+                        self.refresh_manifest(&name);
+                    }
                 }
                 Err(e) => {
                     self.push_log(false, format!("{command}: {e}"));
@@ -467,6 +484,18 @@ impl App {
         }
     }
 
+    /**
+     * Asks one plugin for its manifest again, without reloading the others or
+     * restarting any stream
+     */
+    fn refresh_manifest(&self, name: &str) {
+        self.send(Req::Plugin {
+            tag: format!("describe:{name}"),
+            name: name.to_string(),
+            args: vec![manifest::MANIFEST_FLAG.to_string()],
+            shared: true,
+        });
+    }
     /**
      * Parses a metrics sample, appends it to the history and (for `metrics`
      * views) feeds the CSV recorder
@@ -1534,6 +1563,41 @@ mod tests {
         assert!(
             screen.contains("time") && screen.contains("1.40"),
             "{screen}"
+        );
+    }
+
+    #[test]
+    fn an_action_refreshes_the_plugin_manifest() {
+        let before = r#"{"protocol":1,"actions":[{"id":"cal","label":"Calibrate",
+            "command":["calibrate","--max","{max}"],
+            "args":[{"name":"max","type":"number","default":"5"}]}]}"#;
+        let after = before.replace("\"default\":\"5\"", "\"default\":\"2\"");
+        let mut app = App::new_for_tests(&Iocc::default());
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest::parse(before).unwrap(),
+        }];
+        app.plugins_loaded = true;
+
+        // The TUI sends this request after a successful action; here the answer arrives directly
+        app.on_event(Ev::Plugin {
+            tag: "describe:p".into(),
+            name: "p".into(),
+            args: vec![manifest::MANIFEST_FLAG.into()],
+            result: Ok(backend::PluginOutput {
+                code: 0,
+                stdout: after,
+                stderr: String::new(),
+            }),
+        });
+
+        assert_eq!(
+            app.plugins[0].manifest.actions[0].args[0]
+                .default
+                .as_deref(),
+            Some("2")
         );
     }
 

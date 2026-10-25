@@ -61,6 +61,21 @@ continuously — the panel would keep showing `paused`/`stopped`.
 `stream` view keeps its process running; `text` views append lines (keeping the last 200) while `table`,
 `metrics` and `chart` views replace their content on every line.
 
+## Saving configuration
+
+`iocc` exports `IOCC_CONFIG` (the path of the shared `config.yaml`) for every plugin command **and**
+for manifest requests. A plugin that changes a setting should write it back to its own section, so the
+next run starts where the previous one stopped instead of re-applying the defaults.
+
+The manifest is the right place to publish those values: generate it from the saved configuration and
+use `args[].default` for the current ones. The TUI asks for the manifest again after a successful
+action and on `R`, so the next prompt already shows what was saved. `iocc-powmon`, for example,
+rewrites only the `powmon.chip.mode` / `powmon.chip.maxcurrent` lines and fills the *Calibrate* and
+*Set mode* defaults from them.
+
+`iocc` never rewrites an existing `config.yaml`; it only creates the template when the file is
+missing.
+
 ## Sharing the device between plugins
 
 Only one process can open the MCP2221. The TUI keeps it open and exposes a small broker on a Unix

@@ -24,7 +24,7 @@
 - Lookup order: directory of the iocc executable → each `PATH` entry (the current dir is intentionally not searched). Names must match `[A-Za-z0-9_-]+`; the plugin's exit code is propagated. Plugins are not standalone: the host sets `IOCC_HOST=1` and `IOCC_CONFIG=<config.yaml path>` when spawning them. `list_plugins()` scans the same dirs for the help listing.
 - From the TUI the plugin also receives `IOCC_TUI=1`, and `IOCC_SOCKET` when the manifest entry is `shared`. The command line (`plugin_command`) must never set `IOCC_SOCKET`, so plugins keep opening the device as before; only `plugin_command_with` (TUI) passes it.
 - `shared` plugins should use the `iocc-bus` crate instead of hand-rolling the JSON protocol. `--via-tui` is only for the native commands: it never changes what plugins receive.
-- `config.yaml` is shared: the host only parses the top-level `iocc:` section (`RootConfig`); other top-level keys (e.g. `ont:`, `powmon:`) belong to plugins, which read the same file themselves. Keep host parsing tolerant of unknown sections.
+- `config.yaml` is shared: the host only parses the top-level `iocc:` section (`RootConfig`); other top-level keys (e.g. `ont:`, `powmon:`) belong to plugins, which read the same file themselves. Keep host parsing tolerant of unknown sections. The host never rewrites an existing file; plugins that change a setting write it back (only their own lines) and publish it as the manifest `args[].default`. The TUI re-requests that manifest after a successful action, so prompts show the saved value.
 
 ## Conventions
 
