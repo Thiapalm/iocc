@@ -77,7 +77,7 @@ Protocol: one JSON object per line, one response line each.
 
 ```jsonc
 // request                                       // response
-{"id":1,"op":"ping"}                             {"id":1,"ok":true,"protocol":1,"version":"1.1.0"}
+{"id":1,"op":"ping"}                             {"id":1,"ok":true,"protocol":1,"version":"1.2.0"}
 {"id":2,"op":"status"}                           {"id":2,"ok":true,"info":"MCP rev A.6 ..."}
 {"id":3,"op":"scan"}                             {"id":3,"ok":true,"info":"MCP rev A.6 ...","devices":[32,74]}
 {"id":4,"op":"info","address":74}                {"id":4,"ok":true,"info":"MCP rev A.6 ...","address":74}

@@ -1,7 +1,7 @@
 # `IOExtender Control Center (IOCC)`
 
 <p align=center>
-  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.1.0-red"></a>
+  <a href="https://github.com/Thiapalm/iocc"><img src="https://img.shields.io/badge/version-v1.2.0-red"></a>
   <a href="http://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-ApacheV2-green"></a>
  <a href="http://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green"></a>
 </p>
@@ -30,12 +30,18 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 
 ## Version Revision
 
+1.2.0 - Broker and panel tooling
+- Pin any panel (several from the same plugin), reorder the watches and remove one with `x`
+- Scroll the *Watches* column, zoom a panel and scroll its content
+- Record the pinned `metrics` panels to CSV (`g`, `IOCC_RECORD` overrides the path)
+- Device broker gains `ping`, `status`, `scan`, `gpio_read` and `gpio_write`
+- New `iocc-bus` crate so plugins use the broker without reimplementing the protocol
+- `iocc --via-tui` runs `status`/`scan`/`read`/`write` through a running TUI (direct access remains the default)
+
 1.1.0 - Terminal UI
 - New interactive terminal UI (`iocc tui`) with scan, register editor, plugin panels and log
 - Plugin manifest protocol (`--iocc-manifest`): views (`text`/`table`/`metrics`), streaming views and actions with typed arguments
-- Pinning any panel to the *Watches* column, with several panels per plugin, reordering, scrolling, zoom and CSV recording of the pinned metrics
-- Unix device broker (`IOCC_SOCKET`) for `shared` plugins, with `ping`, `status`, `scan`, `info`, `read`, `write`, `gpio_read` and `gpio_write`
-- `iocc --via-tui` for the native commands and the reusable `iocc-bus` client crate
+- Pinning panels to the *Watches* column and a Unix device broker (`IOCC_SOCKET`) that lets plugins share the bus while the TUI keeps it open
 - Runnable demos without hardware: `examples/iocc-demo`, `examples/iocc-wave` and `examples/tui-demo.sh`
 - Tests now run without hardware (`cargo test`)
 
