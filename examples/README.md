@@ -23,18 +23,21 @@ the list; use `↑↓` to reach the demos by name.
 
 ## What to try
 
-1. Tab **3** (Plugins): select `demo`, press `p` to pin *Live sensors*.
-2. Select `wave`, press `p` to pin *Live signals*.
-3. Switch to tabs **1** or **2**: the *Watches* column keeps both panels updating.
-4. Back on tab 3, with `wave` selected, press `→` to focus the actions:
+1. Tab **3** (Plugins): select `demo`, choose *Live sensors* with `[`/`]` and press `p`.
+2. Still on `demo`, select *Ports* and press `p` again: two panels from the same plugin.
+3. Select `wave`, press `p` to pin *Live signals*.
+4. Switch to tabs **1** or **2**: the *Watches* column keeps all three panels updating.
+5. Back on tab 3, with `wave` selected, press `→` to focus the actions:
    - **Apply load for 4s** is `shared`: the watches keep updating while it runs.
    - **Use the device for 3s** is exclusive: the watch titles change to `paused` and
      the streams restart after it finishes.
-5. `P` unpins everything, `q` quits.
+6. Press `g` to record the pinned metrics to `iocc-record-<timestamp>.csv` in the
+   current directory (`g` again stops; `IOCC_RECORD=path` chooses the file).
+7. `P` unpins everything, `q` quits.
 
-Pinning keeps one panel per plugin, and it picks the first `stream` view: that is why
-the demo has two plugins — one panel each. The column height is split evenly between
-the pinned panels.
+Pinning is per panel, and a plugin may contribute several. When the column cannot show
+all of them, `PageUp`/`PageDown` scrolls the Watches window; `,`/`.` reorder and `x`
+unpins one. Use `z` to zoom a panel while reading it.
 
 ## Test the broker from the command line
 
@@ -48,6 +51,15 @@ IOCC_SOCKET=/run/user/1000/iocc-demo-1000.sock iocc wave watch
 broker protocol, reads through the TUI instead of touching the device. Without
 `IOCC_SOCKET` it still runs (the demo is fake), but a real plugin would try to open the
 device and find it busy while the TUI holds it.
+
+The native commands can also use the broker explicitly:
+
+```sh
+iocc --via-tui scan
+iocc --via-tui read -a 4A -r 02 -e 2
+```
+
+Those need real hardware; the demo plugins only simulate the device.
 
 The real hardware example is `iocc-powmon`: its README explains the same flow for the
 INA226.
