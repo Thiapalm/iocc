@@ -174,4 +174,43 @@ mod tests {
         assert!(!is_valid_plugin_name(""));
         assert!(!is_valid_plugin_name("../evil"));
     }
+
+    /**
+     * The command line must keep handing the device to the plugin: only the TUI
+     * (which owns the chip) passes IOCC_SOCKET
+     */
+    #[test]
+    fn only_the_tui_points_plugins_at_the_broker() {
+        let path = Path::new("/bin/true");
+        let socket = |command: &Command| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == "IOCC_SOCKET")
+                .and_then(|(_, value)| value)
+                .map(OsStr::to_os_string)
+        };
+
+        assert_eq!(socket(&plugin_command(path, &[])), None);
+        assert_eq!(
+            socket(&plugin_command_with(
+                path,
+                &[],
+                Some(Path::new("/tmp/x.sock"))
+            )),
+            Some("/tmp/x.sock".into())
+        );
+        // Other host variables are unchanged in both cases
+        for command in [
+            plugin_command(path, &[]),
+            plugin_command_with(path, &[], Some(Path::new("/tmp/x.sock"))),
+        ] {
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == "IOCC_HOST")
+                    .and_then(|(_, value)| value),
+                Some(OsStr::new("1"))
+            );
+        }
+    }
 }

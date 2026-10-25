@@ -81,6 +81,8 @@ Rules:
 - `exclusive` (default) runs still work: the TUI pauses streaming panels, releases the chip, runs the
   plugin and restarts the panels afterwards.
 - The socket is only created on Unix; elsewhere shared plugins are skipped.
+- Command line use is unchanged: `iocc <name> ...` never sets `IOCC_SOCKET`, so the plugin still opens
+  the device itself. Only the TUI sets it, and only for `shared` views/actions.
 
 ## Pinning panels
 
