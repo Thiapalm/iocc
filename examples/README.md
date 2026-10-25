@@ -6,7 +6,7 @@ touch the USB device, so they run without hardware.
 | Plugin | What it shows |
 |---|---|
 | `iocc-demo` | views (stream, table, text), all argument kinds, confirm, shared and exclusive actions |
-| `iocc-wave` | simulated signals built for pinning: two chart panels you can pin together, a shared action that keeps watches live and an exclusive one that pauses them |
+| `iocc-wave` | simulated signals built for pinning: three chart panels you can pin together, a shared action that keeps watches live and an exclusive one that pauses them |
 
 ## Run
 
@@ -26,10 +26,10 @@ the list; use `↑↓` to reach the demos by name.
 1. Tab **3** (Plugins): select `demo`, choose *Live sensors* with `[`/`]` and press `p`.
 2. Still on `demo`, select *Ports* and press `p` again: two panels from the same plugin.
 3. Select `wave`, press `p` to pin *Live signals*.
-4. Still on `wave`, use `]` to reach *Voltage graph* and *Current graph* and press `p`
-   on each: the two charts stay visible at the same time (`m` switches the series of
-   the selected chart).
-5. Switch to tabs **1** or **2**: the *Watches* column keeps all four panels updating.
+4. Still on `wave`, use `]` to reach *Voltage graph*, *Current graph* and *Power
+   graph* and press `p` on each: the three charts stay visible at the same time
+   (`m` switches the series of the selected chart).
+5. Switch to tabs **1** or **2**: the *Watches* column keeps all six pinned panels updating.
 6. Back on tab 3, with `wave` selected, press `→` to focus the actions:
    - **Apply load for 4s** is `shared`: the watches keep updating while it runs.
    - **Use the device for 3s** is exclusive: the watch titles change to `paused` and

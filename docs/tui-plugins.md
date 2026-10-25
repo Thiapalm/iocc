@@ -246,7 +246,7 @@ Two complete shell examples need no hardware:
 | Plugin | Shows |
 |---|---|
 | `examples/iocc-demo` | stream/table/text views, all argument kinds, confirm, shared and exclusive actions |
-| `examples/iocc-wave` | simulated signals built for pinning: two chart panels you can pin together plus a shared and an exclusive action |
+| `examples/iocc-wave` | simulated signals built for pinning: three chart panels you can pin together plus a shared and an exclusive action |
 
 From the repository root, after `cargo build`:
 

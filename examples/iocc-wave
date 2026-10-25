@@ -40,6 +40,8 @@ case "$1" in
      "stream": true, "command": ["graph"]},
     {"id": "current", "label": "Current graph", "kind": "chart", "metric": "Current",
      "stream": true, "command": ["graph"]},
+    {"id": "power", "label": "Power graph", "kind": "chart", "metric": "Power",
+     "stream": true, "command": ["graph"]},
     {"id": "stats", "label": "Window stats", "kind": "table", "device": "shared",
      "refresh_ms": 2000, "command": ["stats"]},
     {"id": "guide", "label": "What to try", "kind": "text", "device": "shared",
@@ -101,9 +103,9 @@ This plugin is a fake instrument: it never touches the USB device.
 
 Try this:
   1. press p here to pin "Live signals"  (it becomes a Watch)
-  2. press ] to reach "Voltage graph" and "Current graph": p on each one
-     pins both charts, so they stay side by side in Watches; m cycles the
-     series of the selected chart
+  2. press ] to reach "Voltage graph", "Current graph" and "Power graph":
+     p on each one pins all three charts, so they stay side by side in
+     Watches; m cycles the series of the selected chart
   3. press [ or ] to pick another panel and p to pin it too
   4. select the other demo plugin and pin one of its panels
   5. switch to another tab: all watches keep updating
