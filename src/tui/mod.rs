@@ -1134,13 +1134,25 @@ mod tests {
         });
         wait(&mut app, &|a| a.streams.contains(&live));
 
-        // run "Set port" with a=port, b=state
-        app.continue_action(app.plugin_sel, 0, vec!["b".into(), "on".into()]);
-        wait(&mut app, &|a| {
-            a.action_out
-                .as_ref()
-                .is_some_and(|(ok, t)| *ok && t.contains("b -> on"))
-        });
+        // a second plugin can be pinned at the same time (examples/iocc-wave)
+        let wave = app
+            .plugins
+            .iter()
+            .position(|p| p.name == "wave")
+            .expect("wave demo plugin");
+        app.select_plugin(wave);
+        let signal = view_tag("wave", "live");
+        wait(&mut app, &|a| a.streams.contains(&signal));
+        app.toggle_pin();
+        assert_eq!(app.pinned.len(), 2);
+        app.set_tab(0);
+        app.tick();
+        let watches = render(&app);
+        assert!(
+            watches.contains("Live sensors") && watches.contains("Live signals"),
+            "{watches}"
+        );
+        assert!(app.streams.contains(&live) && app.streams.contains(&signal));
         println!("{}", render(&app));
     }
 }

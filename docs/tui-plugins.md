@@ -100,12 +100,24 @@ A non zero exit code shows stdout/stderr in red instead.
 
 ## Try it
 
-`examples/iocc-demo` is a complete shell example (no hardware needed):
+Two complete shell examples need no hardware:
+
+| Plugin | Shows |
+|---|---|
+| `examples/iocc-demo` | stream/table/text views, all argument kinds, confirm, shared and exclusive actions |
+| `examples/iocc-wave` | simulated signals built for pinning: two watchable panels plus a shared and an exclusive action |
+
+From the repository root, after `cargo build`:
 
 ```sh
-cp examples/iocc-demo ~/.local/bin/
-iocc tui     # tab 3, Plugins
+./examples/tui-demo.sh
 ```
+
+The launcher puts `examples/` in `PATH` and sets a fixed `IOCC_SOCKET`. Then, on tab 3,
+pin the panel of each plugin with `p`: both stay live in *Watches* on every tab. Run
+`Apply load for 4s` (shared) and the watches keep updating; run `Use the device for 3s`
+(exclusive) and they show `paused` before restarting. See `examples/README.md` for the
+full walkthrough, including using the broker from another terminal.
 
 ## Keys
 
