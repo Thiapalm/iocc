@@ -4,7 +4,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 const PLUGIN_PREFIX: &str = "iocc-";
 
@@ -72,7 +72,7 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
     let Some(full_path) = plugin_dirs()
         .into_iter()
         .map(|dir| dir.join(&plugin_bin))
-        .find(|path| path.is_file())
+        .find(|path| path.is_file() && is_executable(path))
     else {
         eprintln!("Plugin '{plugin_bin}' not found.");
         return 1;
@@ -83,10 +83,7 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
     }
 
     let mut command = Command::new(&full_path);
-    command
-        .args(args)
-        .stdout(Stdio::inherit())
-        .env("IOCC_HOST", "1");
+    command.args(args).env("IOCC_HOST", "1");
     if let Some(path) = config_path() {
         command.env("IOCC_CONFIG", path);
     }
@@ -139,5 +136,17 @@ pub fn plugins_help() -> String {
     } else {
         let list: Vec<String> = plugins.iter().map(|p| format!("  {p}")).collect();
         format!("Detected Plugins:\n{}", list.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_names() {
+        assert!(is_valid_plugin_name("ont-2_x"));
+        assert!(!is_valid_plugin_name(""));
+        assert!(!is_valid_plugin_name("../evil"));
     }
 }

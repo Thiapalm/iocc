@@ -63,7 +63,10 @@ enum Commands {
  * Parses command received Hex data into u8, used as clap value_parser
  */
 fn parse_u8_hex(s: &str) -> Result<u8, std::num::ParseIntError> {
-    let s = s.trim_start_matches("0x").trim_start_matches("0X");
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     u8::from_str_radix(s, 16)
 }
 
@@ -186,5 +189,25 @@ fn main() {
         None => {
             build_cli(true).print_help().unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_parsing() {
+        assert_eq!(parse_u8_hex("0x10"), Ok(0x10));
+        assert_eq!(parse_u8_hex("0X1f"), Ok(0x1f));
+        assert_eq!(parse_u8_hex("FF"), Ok(0xFF));
+        assert!(parse_u8_hex("0x0x10").is_err());
+        assert!(parse_u8_hex("100").is_err());
+    }
+
+    #[test]
+    fn i2c_address_range() {
+        assert_eq!(parse_i2c_address("7F"), Ok(0x7F));
+        assert!(parse_i2c_address("80").is_err());
     }
 }

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Installer for IOCC (IOExtender Control Center).
 #
-# Usage: ./install.sh [--prefix DIR] [--no-udev] [--uninstall] [--help]
+# Usage: ./install.sh [--prefix DIR] [--no-udev] [--uninstall] [--yes] [--help]
 #   --prefix DIR   Install directory for the binary (default: ~/.local/bin)
 #   --no-udev      Skip the Linux udev rule setup
 #   --uninstall    Remove iocc and iocc-* plugins from the install directory
+#                  (lists the files and asks for confirmation)
+#   --yes          Do not ask for confirmation when uninstalling
 set -euo pipefail
 
 BIN_DIR="${HOME}/.local/bin"
 SETUP_UDEV=1
 UNINSTALL=0
+ASSUME_YES=0
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -20,13 +23,28 @@ while [ $# -gt 0 ]; do
             BIN_DIR="$2"; shift 2 ;;
         --no-udev) SETUP_UDEV=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
+        --yes|-y) ASSUME_YES=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
 if [ "$UNINSTALL" -eq 1 ]; then
-    rm -fv "${BIN_DIR}/iocc" "${BIN_DIR}"/iocc-*
+    targets=()
+    for f in "${BIN_DIR}/iocc" "${BIN_DIR}"/iocc-*; do
+        [ -e "$f" ] && targets+=("$f")
+    done
+    if [ "${#targets[@]}" -eq 0 ]; then
+        echo "Nothing to remove in ${BIN_DIR}."
+        exit 0
+    fi
+    echo "The following files will be removed (may include third-party iocc-* plugins):"
+    printf '  %s\n' "${targets[@]}"
+    if [ "$ASSUME_YES" -ne 1 ]; then
+        read -r -p "Continue? [y/N] " answer || answer=""
+        case "$answer" in y|Y|yes|YES) ;; *) echo "Aborted."; exit 1 ;; esac
+    fi
+    rm -fv "${targets[@]}"
     echo "Config files in the system config folder were left untouched."
     exit 0
 fi

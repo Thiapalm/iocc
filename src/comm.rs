@@ -20,13 +20,7 @@ pub fn start_device(
     config.i2c_speed_hz = speed;
     config.reset_on_open = reset;
     config.timeout = Duration::from_millis(timeout);
-    let dev = match mcp2221::Handle::open_first(&config) {
-        Ok(x) => x,
-        Err(err) => {
-            return Err(err);
-        }
-    };
-    Ok(dev)
+    mcp2221::Handle::open_first(&config)
 }
 
 /**
@@ -121,12 +115,7 @@ pub fn read_device(
     register: u8,
     expected: usize,
 ) -> Result<Vec<u8>, mcp2221::Error> {
-    //println!("addr: {:#02x} reg {:#02x}", addr, register);
     let mut read = vec![0; expected];
-    let mut reg: [u8; 1] = [0; 1];
-    reg[0] = register;
-    match dev.write_read_address(address, &reg, &mut read) {
-        Ok(()) => Ok(read),
-        Err(x) => Err(x),
-    }
+    dev.write_read_address(address, &[register], &mut read)?;
+    Ok(read)
 }

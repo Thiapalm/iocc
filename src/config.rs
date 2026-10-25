@@ -11,8 +11,13 @@ impl<'de> Deserialize<'de> for HexU8 {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let value =
-            u8::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)?;
+        let value = u8::from_str_radix(
+            s.strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(&s),
+            16,
+        )
+        .map_err(serde::de::Error::custom)?;
         Ok(HexU8(value))
     }
 }
@@ -25,9 +30,11 @@ impl fmt::Display for HexU8 {
 
 #[derive(Debug, Deserialize)]
 struct RootConfig {
+    #[serde(default)]
     iocc: Iocc,
 }
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 #[allow(dead_code)]
 pub struct Iocc {
     address: HexU8,
