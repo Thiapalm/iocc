@@ -1,5 +1,5 @@
 use super::backend::SharedDevice;
-use crate::comm::{check_device, read_device, write_device};
+use crate::comm::{check_device, gpio_read, gpio_write, read_device, scan_addresses, write_device};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -16,6 +16,8 @@ struct Request {
     register: Option<u8>,
     count: Option<usize>,
     data: Option<Vec<u8>>,
+    pin: Option<u8>,
+    value: Option<bool>,
 }
 
 /**
@@ -38,7 +40,14 @@ pub fn socket_path() -> Option<PathBuf> {
  * Starts accepting broker clients. Returns the socket path on success.
  */
 pub fn start(shared: &Arc<SharedDevice>) -> Option<PathBuf> {
-    let path = socket_path()?;
+    start_at(shared, socket_path()?)
+}
+
+/**
+ * Same as [`start`], listening on an explicit path. Tests use this to give every
+ * `App` its own broker instead of fighting over the default socket.
+ */
+pub fn start_at(shared: &Arc<SharedDevice>, path: PathBuf) -> Option<PathBuf> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).ok()?;
     // Only the current user may drive the bus through this socket
@@ -83,30 +92,58 @@ fn handle(shared: &SharedDevice, line: &str) -> String {
         value.to_string()
     };
 
-    let address = match request.address {
-        Some(a) if a <= 0x7F => a,
-        _ => return add(serde_json::json!({"ok": false, "error": "missing or invalid address"})),
-    };
-
     let result: Result<serde_json::Value, String> = match request.op.as_str() {
-        "info" => shared
+        "ping" => Ok(serde_json::json!({
+            "ok": true,
+            "protocol": 1,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+        "status" => shared
             .with(|dev| check_device(dev).map_err(|e| e.to_string()))
             .map(|info| serde_json::json!({"ok": true, "info": info})),
-        "read" => {
+        "scan" => shared
+            .with(|dev| {
+                let info = check_device(dev).map_err(|e| e.to_string())?;
+                Ok((info, scan_addresses(dev)))
+            })
+            .map(
+                |(info, devices)| serde_json::json!({"ok": true, "info": info, "devices": devices}),
+            ),
+        "info" => address(&request).and_then(|address| {
+            shared
+                .with(|dev| check_device(dev).map_err(|e| e.to_string()))
+                .map(|info| serde_json::json!({"ok": true, "info": info, "address": address}))
+        }),
+        "read" => address(&request).and_then(|address| {
             let reg = request.register.unwrap_or(0);
             let count = request.count.unwrap_or(1).clamp(1, 256);
             shared
                 .with(|dev| read_device(dev, address, reg, count).map_err(|e| e.to_string()))
                 .map(|data| serde_json::json!({"ok": true, "data": data}))
-        }
-        "write" => {
+        }),
+        "write" => address(&request).and_then(|address| {
             let reg = request.register.unwrap_or(0);
             let data = request.data.unwrap_or_default();
             shared
                 .with(|dev| write_device(dev, address, reg, &data).map_err(|e| e.to_string()))
                 .map(|()| serde_json::json!({"ok": true}))
-        }
-        other => Err(format!("unknown op '{other}', use info, read or write")),
+        }),
+        "gpio_read" => gpio_pin(&request).and_then(|pin| {
+            shared
+                .with(|dev| gpio_read(dev, pin as usize))
+                .map(|value| serde_json::json!({"ok": true, "pin": pin, "value": value}))
+        }),
+        "gpio_write" => gpio_pin(&request).and_then(|pin| {
+            let value = request
+                .value
+                .ok_or_else(|| "missing 'value' (true or false)".to_string())?;
+            shared
+                .with(|dev| gpio_write(dev, pin as usize, value))
+                .map(|()| serde_json::json!({"ok": true, "pin": pin, "value": value}))
+        }),
+        other => Err(format!(
+            "unknown op '{other}', use ping, status, scan, info, read, write, gpio_read or gpio_write"
+        )),
     };
 
     match result {
@@ -117,6 +154,21 @@ fn handle(shared: &SharedDevice, line: &str) -> String {
             value.to_string()
         }
         Err(e) => add(serde_json::json!({"ok": false, "error": e})),
+    }
+}
+
+fn address(request: &Request) -> Result<u8, String> {
+    match request.address {
+        Some(a) if a <= 0x7F => Ok(a),
+        _ => Err("missing or invalid address".into()),
+    }
+}
+
+fn gpio_pin(request: &Request) -> Result<u8, String> {
+    match request.pin {
+        Some(pin @ 0..=3) => Ok(pin),
+        Some(pin) => Err(format!("GPIO pin must be between 0 and 3, got {pin}")),
+        None => Err("missing 'pin' (0-3)".into()),
     }
 }
 
@@ -139,6 +191,22 @@ mod tests {
             serde_json::from_str(&handle(&shared, r#"{"id":8,"op":"read"}"#)).unwrap();
         assert_eq!(out["ok"], false);
         assert!(out["error"].as_str().unwrap().contains("address"));
+        let out: serde_json::Value =
+            serde_json::from_str(&handle(&shared, r#"{"id":9,"op":"gpio_read","pin":9}"#)).unwrap();
+        assert_eq!(out["ok"], false);
+        assert!(out["error"].as_str().unwrap().contains("pin"));
+    }
+
+    #[test]
+    fn ping_answers_without_the_device() {
+        let (tx, _rx) = channel();
+        let shared = Arc::new(SharedDevice::new_for_tests(tx));
+        let out: serde_json::Value =
+            serde_json::from_str(&handle(&shared, r#"{"id":3,"op":"ping"}"#)).unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["id"], 3);
+        assert_eq!(out["protocol"], 1);
+        assert_eq!(out["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

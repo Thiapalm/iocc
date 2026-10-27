@@ -2,12 +2,14 @@ mod backend;
 #[cfg(unix)]
 mod broker;
 mod manifest;
+mod record;
 mod ui;
 
 use crate::config::Iocc;
 use backend::{DeviceParams, Event as Ev, PluginEntry, Req};
 use manifest::{Action, DeviceAccess, Metric, TableData, View, ViewKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use record::Recorder;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -17,6 +19,8 @@ pub const TABS: [&str; 4] = ["Scan", "Registers", "Plugins", "Log"];
 const HISTORY: usize = 120;
 const PENDING_EXPIRE: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Height reserved for each pinned panel when there are more watches than fit
+const WATCH_PANEL_H: u16 = 8;
 
 pub struct LogEntry {
     pub at: Duration,
@@ -94,11 +98,17 @@ pub struct App {
     pub plugins: Vec<PluginEntry>,
     pub plugins_loaded: bool,
     pub plugin_sel: usize,
+    /// Panel of the selected plugin targeted by `p`, `x`, `,`, `.`, `z` and scroll keys
+    pub view_sel: usize,
     pub action_focus: bool,
     pub action_sel: usize,
     pub views: HashMap<String, ViewData>,
     pending: HashMap<String, Instant>,
     pub history: HashMap<String, VecDeque<f64>>,
+    /// Metric drawn by each chart panel (keyed by view tag); `m` cycles it
+    pub chart_metric: HashMap<String, String>,
+    /// Vertical offset of each panel (keyed by view tag)
+    pub scroll: HashMap<String, u16>,
     pub action_out: Option<(bool, String)>,
     running_actions: HashSet<String>,
 
@@ -117,20 +127,38 @@ pub struct App {
     pub exclusive_running: bool,
     /// Panels kept visible while other plugins are used
     pub pinned: Vec<Pinned>,
+    /// First pinned panel shown in the Watches column
+    pub watch_scroll: usize,
+    /// Draw only the selected plugin panel (toggled with `z`)
+    pub zoom: bool,
+    /// CSV recording of the pinned metrics panels
+    recorder: Option<Recorder>,
 }
 
 pub fn view_tag(plugin: &str, view: &str) -> String {
     format!("view:{plugin}:{view}")
 }
 
+fn device_params(config: &Iocc) -> DeviceParams {
+    DeviceParams {
+        speed: config.get_speed(),
+        reset: config.is_reset_on_open(),
+        timeout: config.get_timeout(),
+    }
+}
+
 impl App {
     fn new(config: &Iocc) -> App {
-        let params = DeviceParams {
-            speed: config.get_speed(),
-            reset: config.is_reset_on_open(),
-            timeout: config.get_timeout(),
-        };
-        let backend = backend::spawn(params);
+        App::with_backend(config, backend::spawn(device_params(config)))
+    }
+
+    #[cfg(test)]
+    fn new_for_tests(config: &Iocc) -> App {
+        App::with_backend(config, backend::spawn_for_tests(device_params(config)))
+    }
+
+    fn with_backend(config: &Iocc, backend: backend::Backend) -> App {
+        let params = device_params(config);
         let (tx, rx, socket) = (backend.tx, backend.rx, backend.socket);
         App {
             tab: 0,
@@ -158,11 +186,14 @@ impl App {
             plugins: Vec::new(),
             plugins_loaded: false,
             plugin_sel: 0,
+            view_sel: 0,
             action_focus: false,
             action_sel: 0,
             views: HashMap::new(),
             pending: HashMap::new(),
             history: HashMap::new(),
+            chart_metric: HashMap::new(),
+            scroll: HashMap::new(),
             action_out: None,
             running_actions: HashSet::new(),
             log: Vec::new(),
@@ -174,6 +205,9 @@ impl App {
             stream_done: HashSet::new(),
             exclusive_running: false,
             pinned: Vec::new(),
+            watch_scroll: 0,
+            zoom: false,
+            recorder: None,
         }
     }
 
@@ -199,6 +233,57 @@ impl App {
         self.selected_plugin()
             .map(|p| p.manifest.actions.as_slice())
             .unwrap_or(&[])
+    }
+
+    /**
+     * Panel currently selected inside the plugin (target of pin/scroll/zoom)
+     */
+    pub fn selected_view(&self) -> Option<&View> {
+        self.selected_plugin()?.manifest.views.get(self.view_sel)
+    }
+
+    /**
+     * Tag of the selected panel, if the plugin has any view
+     */
+    pub fn selected_tag(&self) -> Option<String> {
+        let plugin = self.selected_plugin()?;
+        let view = self.selected_view()?;
+        Some(view_tag(&plugin.name, &view.id))
+    }
+
+    /**
+     * Switches a chart panel between the metrics of the last sample (`m`),
+     * starting from the one the manifest selects
+     */
+    fn cycle_chart_metric(&mut self) {
+        let Some(plugin) = self.selected_plugin() else {
+            return;
+        };
+        let Some(view) = plugin.manifest.views.get(self.view_sel) else {
+            return;
+        };
+        if view.kind != ViewKind::Chart {
+            return;
+        }
+        let tag = view_tag(&plugin.name, &view.id);
+        let initial = view.metric.clone();
+        let names: Vec<String> = match self.views.get(&tag).map(|d| &d.content) {
+            Some(ViewContent::Metrics(metrics)) => metrics.iter().map(|m| m.name.clone()).collect(),
+            _ => return,
+        };
+        if names.is_empty() {
+            return;
+        }
+        let current = self
+            .chart_metric
+            .get(&tag)
+            .cloned()
+            .or(initial)
+            .and_then(|name| names.iter().position(|n| *n == name))
+            .unwrap_or(0);
+        let next = (current + 1) % names.len();
+        self.chart_metric.insert(tag, names[next].clone());
+        self.status = format!("graph: {} ({}/{})", names[next], next + 1, names.len());
     }
 
     // ---- requests -------------------------------------------------------
@@ -318,6 +403,9 @@ impl App {
                 self.plugins_loaded = true;
                 self.plugins = entries;
                 self.plugin_sel = 0;
+                self.view_sel = 0;
+                self.zoom = false;
+                self.clamp_watch_scroll();
                 let described = self.plugins.iter().filter(|p| p.described).count();
                 self.push_log(
                     true,
@@ -351,6 +439,18 @@ impl App {
         result: Result<backend::PluginOutput, String>,
     ) {
         let command = format!("iocc {name} {}", args.join(" "));
+        if let Some(plugin) = tag.strip_prefix("describe:") {
+            // A plugin answered a fresh manifest request: keep the new action
+            // defaults without touching the panels or the running streams
+            if let Ok(out) = result
+                && let Some(manifest) = manifest::Manifest::parse(&out.stdout)
+                && let Some(entry) = self.plugins.iter_mut().find(|p| p.name == plugin)
+            {
+                entry.manifest = manifest;
+                entry.described = true;
+            }
+            return;
+        }
         if let Some(rest) = tag.strip_prefix("view:") {
             self.pending.remove(&tag);
             let view_kind = rest
@@ -397,6 +497,11 @@ impl App {
                     }
                     self.push_log(ok, format!("{command} -> exit {}", out.code));
                     self.action_out = Some((ok, text));
+                    if ok {
+                        // An action may have saved configuration (powmon does):
+                        // reload its manifest so the next prompt shows the new value
+                        self.refresh_manifest(&name);
+                    }
                 }
                 Err(e) => {
                     self.push_log(false, format!("{command}: {e}"));
@@ -412,19 +517,43 @@ impl App {
             ViewKind::Table => manifest::parse_table(&stdout)
                 .map(ViewContent::Table)
                 .unwrap_or_else(ViewContent::Error),
-            ViewKind::Metrics => match manifest::parse_metrics(&stdout) {
-                Ok(metrics) => {
-                    for m in &metrics {
-                        let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
-                        if h.len() == HISTORY {
-                            h.pop_front();
-                        }
-                        h.push_back(m.value);
+            ViewKind::Metrics => self.metrics_content(tag, &stdout, true),
+            ViewKind::Chart => self.metrics_content(tag, &stdout, false),
+        }
+    }
+
+    /**
+     * Asks one plugin for its manifest again, without reloading the others or
+     * restarting any stream
+     */
+    fn refresh_manifest(&self, name: &str) {
+        self.send(Req::Plugin {
+            tag: format!("describe:{name}"),
+            name: name.to_string(),
+            args: vec![manifest::MANIFEST_FLAG.to_string()],
+            shared: true,
+        });
+    }
+    /**
+     * Parses a metrics sample, appends it to the history and (for `metrics`
+     * views) feeds the CSV recorder
+     */
+    fn metrics_content(&mut self, tag: &str, stdout: &str, record: bool) -> ViewContent {
+        match manifest::parse_metrics(stdout) {
+            Ok(metrics) => {
+                for m in &metrics {
+                    let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
+                    if h.len() == HISTORY {
+                        h.pop_front();
                     }
-                    ViewContent::Metrics(metrics)
+                    h.push_back(m.value);
                 }
-                Err(e) => ViewContent::Error(e),
-            },
+                if record {
+                    self.record_metrics(tag, &metrics);
+                }
+                ViewContent::Metrics(metrics)
+            }
+            Err(e) => ViewContent::Error(e),
         }
     }
 
@@ -529,14 +658,7 @@ impl App {
             return;
         };
         let name = plugin.name.clone();
-        let Some(view) = plugin
-            .manifest
-            .views
-            .iter()
-            .find(|v| v.stream)
-            .or_else(|| plugin.manifest.views.first())
-            .cloned()
-        else {
+        let Some(view) = plugin.manifest.views.get(self.view_sel).cloned() else {
             self.push_log(false, format!("{name} has no panel to pin"));
             return;
         };
@@ -547,10 +669,8 @@ impl App {
             .position(|p| view_tag(&p.plugin, &p.view.id) == tag)
         {
             self.pinned.remove(pos);
-            self.send(Req::StreamStop { tag: tag.clone() });
-            self.streams.remove(&tag);
-            self.views.remove(&tag);
-            self.push_log(true, format!("unpinned {name}"));
+            self.clamp_watch_scroll();
+            self.push_log(true, format!("unpinned {name}: {}", view.title()));
         } else {
             let title = view.title().to_string();
             self.pinned.push(Pinned {
@@ -561,6 +681,173 @@ impl App {
                 true,
                 format!("pinned {name}: {title} (stays visible on every tab)"),
             );
+        }
+    }
+
+    /**
+     * Removes the selected panel from the Watches column without toggling
+     */
+    fn unpin_selected(&mut self) {
+        let Some(tag) = self.selected_tag() else {
+            return;
+        };
+        let Some(pos) = self
+            .pinned
+            .iter()
+            .position(|p| view_tag(&p.plugin, &p.view.id) == tag)
+        else {
+            self.push_log(false, "this panel is not pinned (press p to pin it)");
+            return;
+        };
+        let pinned = self.pinned.remove(pos);
+        self.clamp_watch_scroll();
+        self.push_log(
+            true,
+            format!("unpinned {}: {}", pinned.plugin, pinned.view.title()),
+        );
+    }
+
+    /**
+     * Moves the selected pinned panel up or down in the Watches column
+     */
+    fn move_pin(&mut self, delta: isize) {
+        let Some(tag) = self.selected_tag() else {
+            return;
+        };
+        let Some(pos) = self
+            .pinned
+            .iter()
+            .position(|p| view_tag(&p.plugin, &p.view.id) == tag)
+        else {
+            return;
+        };
+        let next = pos as isize + delta;
+        if next >= 0 && (next as usize) < self.pinned.len() {
+            self.pinned.swap(pos, next as usize);
+            self.push_log(true, format!("moved watch to position {}", next + 1));
+        }
+    }
+
+    fn clamp_watch_scroll(&mut self) {
+        self.watch_scroll = self.watch_scroll.min(self.pinned.len().saturating_sub(1));
+    }
+
+    /**
+     * Selects another panel of the current plugin with `[` and `]`
+     */
+    fn select_view(&mut self, delta: isize) {
+        let Some(plugin) = self.selected_plugin() else {
+            return;
+        };
+        let count = plugin.manifest.views.len();
+        if count == 0 {
+            return;
+        }
+        self.view_sel = (self.view_sel as isize + delta).rem_euclid(count as isize) as usize;
+    }
+
+    fn scroll_selected_view(&mut self, delta: i32) {
+        let Some(tag) = self.selected_tag() else {
+            return;
+        };
+        let max = self.view_lines(&tag).saturating_sub(1) as i32;
+        let current = self.scroll.get(&tag).copied().unwrap_or(0) as i32;
+        let next = (current + delta).clamp(0, max.max(0)) as u16;
+        if next == 0 {
+            self.scroll.remove(&tag);
+        } else {
+            self.scroll.insert(tag, next);
+        }
+    }
+
+    fn view_lines(&self, tag: &str) -> usize {
+        match self.views.get(tag).map(|d| &d.content) {
+            Some(ViewContent::Text(text)) => text.lines().count(),
+            Some(ViewContent::Table(table)) => table.rows.len(),
+            Some(ViewContent::Metrics(metrics)) => metrics.len(),
+            _ => 0,
+        }
+    }
+
+    /**
+     * Scrolls the Watches column when there are more pinned panels than fit
+     */
+    fn scroll_watches(&mut self, delta: isize) {
+        let max = self.pinned.len().saturating_sub(1) as isize;
+        self.watch_scroll = (self.watch_scroll as isize + delta).clamp(0, max) as usize;
+    }
+
+    /**
+     * Starts or stops writing the pinned metrics panels to a CSV file
+     */
+    fn toggle_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            match recorder.finish() {
+                Ok((path, rows)) => self.push_log(
+                    true,
+                    format!("recording saved to {} ({rows} rows)", path.display()),
+                ),
+                Err(e) => self.push_log(false, format!("recording: {e}")),
+            }
+            return;
+        }
+        if !self.pinned.iter().any(|p| p.view.kind == ViewKind::Metrics) {
+            self.push_log(false, "pin a metrics panel before recording (p)");
+            return;
+        }
+        match Recorder::create_default() {
+            Ok(recorder) => {
+                let path = recorder.path().display().to_string();
+                self.recorder = Some(recorder);
+                self.push_log(
+                    true,
+                    format!("recording pinned metrics to {path} (g to stop)"),
+                );
+            }
+            Err(e) => self.push_log(false, format!("recording: {e}")),
+        }
+    }
+
+    /**
+     * Flushes and closes the recording, returning the path and the row count
+     */
+    fn stop_recording(&mut self) -> Option<(PathBuf, u64)> {
+        let recorder = self.recorder.take()?;
+        match recorder.finish() {
+            Ok(saved) => Some(saved),
+            Err(e) => {
+                self.push_log(false, format!("recording: {e}"));
+                None
+            }
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    fn record_metrics(&mut self, tag: &str, metrics: &[Metric]) {
+        if self.recorder.is_none()
+            || !self
+                .pinned
+                .iter()
+                .any(|p| view_tag(&p.plugin, &p.view.id) == tag)
+        {
+            return;
+        }
+        let Some((plugin, view)) = tag
+            .strip_prefix("view:")
+            .and_then(|rest| rest.split_once(':'))
+        else {
+            return;
+        };
+        let err = self
+            .recorder
+            .as_mut()
+            .and_then(|recorder| recorder.write(plugin, view, metrics).err());
+        if let Some(e) = err {
+            self.recorder.take();
+            self.push_log(false, format!("recording stopped: {e}"));
         }
     }
 
@@ -595,19 +882,8 @@ impl App {
         }
         let kind = self.view_kind(tag);
         let content = match kind {
-            ViewKind::Metrics => match manifest::parse_metrics(line) {
-                Ok(metrics) => {
-                    for m in &metrics {
-                        let h = self.history.entry(format!("{tag}:{}", m.name)).or_default();
-                        if h.len() == HISTORY {
-                            h.pop_front();
-                        }
-                        h.push_back(m.value);
-                    }
-                    ViewContent::Metrics(metrics)
-                }
-                Err(e) => ViewContent::Error(e),
-            },
+            ViewKind::Metrics => self.metrics_content(tag, line, true),
+            ViewKind::Chart => self.metrics_content(tag, line, false),
             ViewKind::Table => match manifest::parse_table(line) {
                 Ok(table) => ViewContent::Table(table),
                 Err(e) => ViewContent::Error(e),
@@ -667,7 +943,11 @@ impl App {
         self.stream_done.clear();
         self.plugins_loaded = false;
         self.views.clear();
+        self.scroll.clear();
+        self.chart_metric.clear();
         self.pending.remove("load");
+        self.view_sel = 0;
+        self.zoom = false;
     }
 
     // ---- keyboard -----------------------------------------------------------
@@ -684,11 +964,34 @@ impl App {
             self.on_prompt_key(key);
             return;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && self.tab == 2 {
+            match key.code {
+                KeyCode::Up => {
+                    self.scroll_selected_view(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.scroll_selected_view(1);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.scroll_selected_view(-10);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.scroll_selected_view(10);
+                    return;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Tab => self.set_tab((self.tab + 1) % TABS.len()),
             KeyCode::BackTab => self.set_tab((self.tab + TABS.len() - 1) % TABS.len()),
             KeyCode::Char(c @ '1'..='4') => self.set_tab(c as usize - '1' as usize),
+            KeyCode::PageUp if !self.pinned.is_empty() => self.scroll_watches(-3),
+            KeyCode::PageDown if !self.pinned.is_empty() => self.scroll_watches(3),
             _ => match self.tab {
                 0 => self.on_scan_key(key.code),
                 1 => self.on_regs_key(key.code),
@@ -792,17 +1095,29 @@ impl App {
         match code {
             KeyCode::Up => self.select_plugin(self.plugin_sel.saturating_sub(1)),
             KeyCode::Down => self.select_plugin((self.plugin_sel + 1).min(count.saturating_sub(1))),
-            KeyCode::Right | KeyCode::Enter if !self.actions().is_empty() => {
+            KeyCode::Char('[') => self.select_view(-1),
+            KeyCode::Char(']') => self.select_view(1),
+            KeyCode::Right | KeyCode::Enter if !self.zoom && !self.actions().is_empty() => {
                 self.action_focus = true;
                 self.action_sel = 0;
             }
             KeyCode::Char('R') => self.reload_plugins(),
             KeyCode::Char('p') => self.toggle_pin(),
+            KeyCode::Char('x') => self.unpin_selected(),
+            KeyCode::Char(',') => self.move_pin(-1),
+            KeyCode::Char('.') => self.move_pin(1),
+            KeyCode::Char('z') => {
+                if self.selected_view().is_some() {
+                    self.zoom = !self.zoom;
+                }
+            }
+            KeyCode::Char('g') => self.toggle_recording(),
+            KeyCode::Char('m') => self.cycle_chart_metric(),
             KeyCode::Char('P') => {
-                self.stop_streams();
-                self.stream_done.clear();
+                let count = self.pinned.len();
                 self.pinned.clear();
-                self.push_log(true, "all watches unpinned");
+                self.watch_scroll = 0;
+                self.push_log(true, format!("{count} watch(es) unpinned"));
             }
             _ => {}
         }
@@ -811,6 +1126,9 @@ impl App {
     fn select_plugin(&mut self, index: usize) {
         if index != self.plugin_sel {
             self.plugin_sel = index;
+            self.view_sel = 0;
+            self.action_sel = 0;
+            self.zoom = false;
             self.action_out = None;
         }
     }
@@ -1011,6 +1329,18 @@ impl App {
 }
 
 /**
+ * Removes the broker socket this TUI created. The thread that listens on it
+ * ends with the process, so a stale path would only confuse the next client.
+ */
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(path) = &self.socket {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/**
  * Runs the TUI until the user quits
  */
 pub fn run(config: &Iocc) -> std::io::Result<()> {
@@ -1032,7 +1362,11 @@ pub fn run(config: &Iocc) -> std::io::Result<()> {
         Ok(())
     })();
     app.stop_streams();
+    let saved = app.stop_recording();
     ratatui::restore();
+    if let Some((path, rows)) = saved {
+        println!("recording saved to {} ({rows} data rows)", path.display());
+    }
     result
 }
 
@@ -1059,7 +1393,7 @@ mod tests {
 
     #[test]
     fn renders_all_tabs() {
-        let mut app = App::new(&Iocc::default());
+        let mut app = App::new_for_tests(&Iocc::default());
         app.connected = Some(true);
         app.found.extend([0x20, 0x4A]);
         app.reg_data = vec![0xFF, 0x00, 0x08, 0x41];
@@ -1078,6 +1412,310 @@ mod tests {
         println!("{scan}\n{regs}");
     }
 
+    fn test_view(id: &str) -> View {
+        View {
+            id: id.into(),
+            label: None,
+            command: Vec::new(),
+            kind: ViewKind::Metrics,
+            refresh_ms: None,
+            stream: true,
+            metric: None,
+            device: DeviceAccess::Exclusive,
+        }
+    }
+
+    fn test_app_with_views(ids: &[&str]) -> App {
+        let mut app = App::new_for_tests(&Iocc::default());
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: ids.iter().map(|id| test_view(id)).collect(),
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        app
+    }
+
+    #[test]
+    fn pins_the_selected_panel_and_allows_several_per_plugin() {
+        let mut app = test_app_with_views(&["one", "two"]);
+        app.select_view(1);
+        assert_eq!(app.view_sel, 1);
+        app.toggle_pin();
+        assert_eq!(app.pinned.len(), 1);
+        assert_eq!(app.pinned[0].view.id, "two");
+
+        app.select_view(-1);
+        app.toggle_pin();
+        assert_eq!(app.pinned.len(), 2);
+        assert_eq!(app.pinned[1].view.id, "one");
+
+        // selected view is "one", at the end: move it up
+        app.move_pin(-1);
+        assert_eq!(app.pinned[0].view.id, "one");
+        assert_eq!(app.pinned[1].view.id, "two");
+
+        app.unpin_selected();
+        assert_eq!(app.pinned.len(), 1);
+        assert_eq!(app.pinned[0].view.id, "two");
+    }
+
+    #[test]
+    fn scrolls_the_selected_panel() {
+        let mut app = test_app_with_views(&["one"]);
+        let tag = view_tag("p", "one");
+        app.views.insert(
+            tag.clone(),
+            ViewData {
+                content: ViewContent::Text("a\nb\nc".into()),
+                updated: Instant::now(),
+            },
+        );
+        app.scroll_selected_view(2);
+        assert_eq!(app.scroll.get(&tag), Some(&2));
+        app.scroll_selected_view(10);
+        assert_eq!(app.scroll.get(&tag), Some(&2));
+        app.scroll_selected_view(-10);
+        assert!(!app.scroll.contains_key(&tag));
+    }
+
+    #[test]
+    fn zoom_draws_only_the_selected_panel() {
+        let mut app = test_app_with_views(&["one", "two"]);
+        for (id, text) in [("one", "FIRST PANEL"), ("two", "SECOND PANEL")] {
+            app.views.insert(
+                view_tag("p", id),
+                ViewData {
+                    content: ViewContent::Text(text.into()),
+                    updated: Instant::now(),
+                },
+            );
+        }
+        app.tab = 2;
+        app.view_sel = 1;
+        app.zoom = true;
+        let screen = render(&app);
+        assert!(screen.contains("SECOND PANEL"), "{screen}");
+        assert!(!screen.contains("FIRST PANEL"), "{screen}");
+    }
+
+    #[test]
+    fn watch_column_scrolls_when_panels_do_not_fit() {
+        let mut app = test_app_with_views(&["one"]);
+        for id in 0..6 {
+            app.pinned.push(Pinned {
+                plugin: "p".into(),
+                view: test_view(&format!("v{id}")),
+            });
+        }
+        app.tab = 2;
+        app.watch_scroll = 3;
+        let screen = render(&app);
+        assert!(screen.contains("Watches (p/P) 4-6/6"), "{screen}");
+    }
+
+    #[test]
+    fn records_only_pinned_metrics() {
+        let mut app = test_app_with_views(&["one", "two"]);
+        app.pinned.push(Pinned {
+            plugin: "p".into(),
+            view: test_view("one"),
+        });
+        let path = std::env::temp_dir().join(format!("iocc-record-app-{}.csv", std::process::id()));
+        app.recorder = Some(Recorder::create(path.clone()).unwrap());
+        app.record_metrics(
+            "view:p:one",
+            &[Metric {
+                name: "Current".into(),
+                value: 1.25,
+                unit: Some("A".into()),
+            }],
+        );
+        app.record_metrics(
+            "view:p:two",
+            &[Metric {
+                name: "Ignored".into(),
+                value: 0.0,
+                unit: None,
+            }],
+        );
+        let (saved, rows) = app.stop_recording().unwrap();
+        assert_eq!(saved, path);
+        assert_eq!(rows, 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(",p,one,Current,A,1.25"));
+        assert!(!text.contains("Ignored"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn chart_uses_the_metric_history() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Current graph".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Current".into()),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let history = app.history.entry(format!("{tag}:Current")).or_default();
+        history.extend([1.0, 1.2, 1.4]);
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(vec![Metric {
+                    name: "Current".into(),
+                    value: 1.4,
+                    unit: Some("A".into()),
+                }]),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        assert!(screen.contains("Current: 1.400 A"), "{screen}");
+        assert!(
+            screen.contains("min 1.000") && screen.contains("3 samples"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("time") && screen.contains("1.40"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn chart_cycles_metrics_with_m() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Graph".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Current".into()),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let metrics = vec![
+            Metric {
+                name: "Voltage".into(),
+                value: 12.0,
+                unit: Some("V".into()),
+            },
+            Metric {
+                name: "Current".into(),
+                value: 1.4,
+                unit: Some("A".into()),
+            },
+            Metric {
+                name: "Power".into(),
+                value: 16.8,
+                unit: Some("W".into()),
+            },
+        ];
+        for metric in &metrics {
+            let h = app
+                .history
+                .entry(format!("{tag}:{}", metric.name))
+                .or_default();
+            h.extend([1.0, 2.0, 3.0]);
+        }
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(metrics),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        assert!(screen.contains("Current: 1.400 A"), "{screen}");
+        assert!(screen.contains("m: next (2/3)"), "{screen}");
+
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let screen = render(&app);
+        assert!(screen.contains("Power: 16.800 W"), "{screen}");
+        assert!(screen.contains("m: next (3/3)"), "{screen}");
+
+        // Wraps around to the first metric
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let screen = render(&app);
+        assert!(screen.contains("Voltage: 12.000 V"), "{screen}");
+        assert!(screen.contains("m: next (1/3)"), "{screen}");
+    }
+
+    #[test]
+    fn an_action_refreshes_the_plugin_manifest() {
+        let before = r#"{"protocol":1,"actions":[{"id":"cal","label":"Calibrate",
+            "command":["calibrate","--max","{max}"],
+            "args":[{"name":"max","type":"number","default":"5"}]}]}"#;
+        let after = before.replace("\"default\":\"5\"", "\"default\":\"2\"");
+        let mut app = App::new_for_tests(&Iocc::default());
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest::parse(before).unwrap(),
+        }];
+        app.plugins_loaded = true;
+
+        // The TUI sends this request after a successful action; here the answer arrives directly
+        app.on_event(Ev::Plugin {
+            tag: "describe:p".into(),
+            name: "p".into(),
+            args: vec![manifest::MANIFEST_FLAG.into()],
+            result: Ok(backend::PluginOutput {
+                code: 0,
+                stdout: after,
+                stderr: String::new(),
+            }),
+        });
+
+        assert_eq!(
+            app.plugins[0].manifest.actions[0].args[0]
+                .default
+                .as_deref(),
+            Some("2")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn demo_plugin_end_to_end() {
@@ -1085,7 +1723,7 @@ mod tests {
         // SAFETY: no other test reads or writes PATH
         unsafe { std::env::set_var("PATH", format!("{examples}:/usr/bin:/bin")) };
 
-        let mut app = App::new(&Iocc::default());
+        let mut app = App::new_for_tests(&Iocc::default());
         app.tab = 2;
         let wait = |app: &mut App, cond: &dyn Fn(&App) -> bool| {
             for _ in 0..100 {
@@ -1105,7 +1743,11 @@ mod tests {
         assert!(demo.described);
         assert_eq!(demo.manifest.views.len(), 3);
 
-        wait(&mut app, &|a| a.views.len() == 3);
+        // views exist as soon as the snapshot commands finish; the stream needs
+        // one more line to show Voltage, so wait for the rendered content too
+        wait(&mut app, &|a| {
+            a.views.len() == 3 && render(a).contains("Voltage")
+        });
         let screen = render(&app);
         assert!(
             screen.contains("Voltage") && screen.contains("IOCC_TUI=1"),
@@ -1124,6 +1766,17 @@ mod tests {
             "{watches}"
         );
         assert!(app.streams.contains(&live));
+
+        // another panel of the same plugin can be pinned too
+        app.set_tab(2);
+        app.select_view(1);
+        assert_eq!(app.view_sel, 1);
+        app.toggle_pin();
+        assert_eq!(app.pinned.len(), 2);
+        assert!(app.pinned.iter().any(|p| p.view.id == "ports"));
+        app.unpin_selected();
+        assert_eq!(app.pinned.len(), 1);
+        app.select_view(-1);
 
         // an exclusive action pauses the watch and it restarts afterwards
         app.continue_action(app.plugin_sel, 0, vec!["b".into(), "on".into()]);

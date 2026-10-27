@@ -1,0 +1,27 @@
+[package]
+name = "iocc-mydev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Starter iocc plugin: an I2C device with TUI panels, actions and saved settings"
+readme = "README.md"
+
+# The template is a standalone crate. Without this table cargo would look for a
+# workspace in the parent directories and refuse to build when copied elsewhere.
+[workspace]
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+embedded-hal = "0.2.6"
+mcp2221 = "0.1.1"
+
+# Inside the iocc repository. In a separate project use the git dependency
+# shown in README.md ("Depend on iocc-bus") and delete this path.
+iocc-bus = { version = "0.1.0", path = "../../iocc-bus" }
+
+[profile.release]
+strip = true

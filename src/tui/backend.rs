@@ -190,11 +190,23 @@ pub struct Backend {
  * freezes.
  */
 pub fn spawn(params: DeviceParams) -> Backend {
+    spawn_with(params, None)
+}
+
+/**
+ * Starts the backend with an explicit broker socket path. Tests pass a unique
+ * path so several `App`s can run in parallel; production uses the default path.
+ */
+fn spawn_with(params: DeviceParams, socket: Option<PathBuf>) -> Backend {
     let (req_tx, req_rx) = channel::<Req>();
     let (ev_tx, ev_rx) = channel::<Event>();
     let shared = Arc::new(SharedDevice::new(params, ev_tx.clone()));
-    let socket = start_broker(&shared);
-    thread::spawn(move || backend_loop(req_rx, shared, ev_tx));
+    let socket = match socket {
+        Some(path) => start_broker_at(&shared, path),
+        None => start_broker(&shared),
+    };
+    let plugin_socket = socket.clone();
+    thread::spawn(move || backend_loop(req_rx, shared, ev_tx, plugin_socket));
     Backend {
         tx: req_tx,
         rx: ev_rx,
@@ -202,10 +214,31 @@ pub fn spawn(params: DeviceParams) -> Backend {
     }
 }
 
-fn backend_loop(rx: Receiver<Req>, shared: Arc<SharedDevice>, tx: Sender<Event>) {
+/**
+ * Backend for tests: a broker on a unique path, so parallel tests never rebind
+ * or remove each other's socket.
+ */
+#[cfg(test)]
+pub fn spawn_for_tests(params: DeviceParams) -> Backend {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "iocc-test-{}-{}.sock",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    spawn_with(params, Some(path))
+}
+
+fn backend_loop(
+    rx: Receiver<Req>,
+    shared: Arc<SharedDevice>,
+    tx: Sender<Event>,
+    socket: Option<PathBuf>,
+) {
     let mut streams: HashMap<String, Arc<Mutex<Child>>> = HashMap::new();
     while let Ok(req) = rx.recv() {
-        handle(req, &shared, &tx, &mut streams);
+        handle(req, &shared, &tx, &mut streams, socket.as_deref());
     }
     // The UI is gone: do not leave streaming plugins behind
     for (_, child) in streams {
@@ -220,6 +253,7 @@ fn handle(
     shared: &Arc<SharedDevice>,
     tx: &Sender<Event>,
     streams: &mut HashMap<String, Arc<Mutex<Child>>>,
+    socket: Option<&Path>,
 ) {
     match req {
         Req::Status => {
@@ -249,8 +283,7 @@ fn handle(
             });
         }
         Req::LoadPlugins => {
-            let socket = socket_path();
-            let _ = tx.send(Event::Plugins(load_plugins(socket.as_deref())));
+            let _ = tx.send(Event::Plugins(load_plugins(socket)));
         }
         Req::Plugin {
             tag,
@@ -258,7 +291,7 @@ fn handle(
             args,
             shared: is_shared,
         } => {
-            let socket = if is_shared { socket_path() } else { None };
+            let plugin_socket = if is_shared { socket } else { None };
             if !is_shared {
                 // Exclusive: the plugin opens the chip itself, so no stream can keep using it
                 stop_streams(streams, tx);
@@ -266,7 +299,7 @@ fn handle(
                 shared.release();
             }
             let result = match find_plugin(&name) {
-                Some(path) => run_captured(&path, &args, socket.as_deref(), PLUGIN_TIMEOUT),
+                Some(path) => run_captured(&path, &args, plugin_socket, PLUGIN_TIMEOUT),
                 None => Err(format!("plugin iocc-{name} not found")),
             };
             if !is_shared {
@@ -292,7 +325,7 @@ fn handle(
                 });
                 return;
             };
-            match start_stream(tag.clone(), &path, &args, socket_path().as_deref(), tx) {
+            match start_stream(tag.clone(), &path, &args, socket, tx) {
                 Ok(child) => {
                     streams.insert(tag, child);
                 }
@@ -331,12 +364,8 @@ fn stop_streams(streams: &mut HashMap<String, Arc<Mutex<Child>>>, tx: &Sender<Ev
 }
 
 /**
- * Broker socket path for this run (None off Unix)
+ * Broker stubs for platforms without Unix sockets
  */
-pub fn socket_path() -> Option<PathBuf> {
-    broker::socket_path()
-}
-
 #[cfg(not(unix))]
 mod broker {
     use super::SharedDevice;
@@ -347,7 +376,7 @@ mod broker {
         None
     }
 
-    pub fn socket_path() -> Option<PathBuf> {
+    pub fn start_at(_shared: &Arc<SharedDevice>, _path: PathBuf) -> Option<PathBuf> {
         None
     }
 }
@@ -357,6 +386,10 @@ use super::broker;
 
 fn start_broker(shared: &Arc<SharedDevice>) -> Option<PathBuf> {
     broker::start(shared)
+}
+
+fn start_broker_at(shared: &Arc<SharedDevice>, path: PathBuf) -> Option<PathBuf> {
+    broker::start_at(shared, path)
 }
 
 fn load_plugins(socket: Option<&Path>) -> Vec<PluginEntry> {

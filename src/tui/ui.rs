@@ -1,12 +1,13 @@
-use super::manifest::cell_text;
-use super::{App, TABS, ViewContent, view_tag};
+use super::manifest::{Metric, ViewKind, cell_text};
+use super::{App, TABS, ViewContent, WATCH_PANEL_H, view_tag};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, Tabs,
-    Wrap,
+    Axis, Block, Borders, Cell, Chart, Clear, Dataset, GraphType, List, ListItem, ListState,
+    Paragraph, Row, Sparkline, Table, Tabs, Wrap,
 };
 
 const OK: Color = Color::Green;
@@ -49,7 +50,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Some(false) => ("○", ERR, "disconnected"),
         None => ("○", DIM, "connecting"),
     };
-    let title = Line::from(vec![
+    let mut spans = vec![
         Span::raw(" iocc "),
         Span::styled(dot, Style::new().fg(color)),
         Span::raw(format!(
@@ -57,7 +58,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             app.params.speed / 1000,
             app.params.timeout
         )),
-    ]);
+    ];
+    if app.is_recording() {
+        spans.push(Span::styled("● REC ", Style::new().fg(ERR).bold()));
+    }
+    let title = Line::from(spans);
     let tabs = Tabs::new(
         TABS.iter()
             .enumerate()
@@ -70,13 +75,18 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let keys = match app.tab {
+    let mut keys = match app.tab {
         0 => "←↑↓→ move · Enter open · s scan · i info",
         1 => "↑↓ · Enter write · r read · p poll · a/g/n set · m read-only",
         2 if app.action_focus => "↑↓ select · Enter run · Esc back",
-        2 => "↑↓ plugin · Enter/→ actions · p pin · P unpin · R reload",
+        2 if app.zoom => "z close · Ctrl+↑↓ scroll · g CSV · P unpin · R reload",
+        2 => "↑↓ plugin · [ ] panel · p pin · x unpin · ,/. order · g CSV · z zoom · R reload",
         _ => "↑↓ scroll · c clear",
-    };
+    }
+    .to_string();
+    if !app.pinned.is_empty() {
+        keys.push_str(" · PgUp/PgDn watches");
+    }
     let line = Line::from(vec![
         Span::styled(format!(" {} ", app.status), Style::new().fg(Color::Cyan)),
         Span::styled(format!("│ {keys} │ Tab · q quit"), Style::new().fg(DIM)),
@@ -85,14 +95,32 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /**
- * Panels pinned with `p`, kept visible on every tab while other plugins are used
+ * Panels pinned with `p`, kept visible on every tab while other plugins are used.
+ * When they do not fit, the column shows a window scrolled with PageUp/PageDown.
  */
 fn draw_pinned(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = Block::bordered().title(" Watches (p/P) ");
-    let inner = outer.inner(area);
+    let total = app.pinned.len();
+    if total == 0 {
+        return;
+    }
+    let inner = Block::bordered().inner(area);
+    let visible = ((inner.height / WATCH_PANEL_H) as usize).clamp(1, total);
+    let start = app.watch_scroll.min(total - visible);
+    let shown = &app.pinned[start..start + visible];
+    let title = if visible < total {
+        format!(
+            " Watches (p/P) {}-{}/{} ",
+            start + 1,
+            start + visible,
+            total
+        )
+    } else {
+        " Watches (p/P) ".to_string()
+    };
+    let outer = Block::bordered().title(title);
     frame.render_widget(outer, area);
-    let areas = Layout::vertical(vec![Constraint::Fill(1); app.pinned.len()]).split(inner);
-    for (pinned, area) in app.pinned.iter().zip(areas.iter()) {
+    let areas = Layout::vertical(vec![Constraint::Fill(1); visible]).split(inner);
+    for (pinned, area) in shown.iter().zip(areas.iter()) {
         draw_view(frame, app, &pinned.plugin, &pinned.view, *area);
     }
 }
@@ -224,6 +252,13 @@ fn draw_plugins(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
+    if app.zoom
+        && let Some(plugin) = app.selected_plugin()
+        && let Some(view) = plugin.manifest.views.get(app.view_sel)
+    {
+        draw_view(frame, app, &plugin.name, view, area);
+        return;
+    }
     let [list_area, detail] =
         Layout::horizontal([Constraint::Length(24), Constraint::Min(30)]).areas(area);
 
@@ -344,6 +379,15 @@ fn draw_plugins(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest::View, area: Rect) {
     let tag = view_tag(plugin, &view.id);
     let data = app.views.get(&tag);
+    let scroll = app.scroll.get(&tag).copied().unwrap_or(0);
+    let selected = app.tab == 2
+        && app.selected_plugin().is_some_and(|p| {
+            p.name == plugin
+                && p.manifest
+                    .views
+                    .get(app.view_sel)
+                    .is_some_and(|v| v.id == view.id)
+        });
     let age = data
         .map(|d| format!(" · {}s ago", d.updated.elapsed().as_secs()))
         .unwrap_or_default();
@@ -360,20 +404,31 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
     };
     let block = Block::new()
         .borders(Borders::TOP)
-        .border_style(Style::new().fg(DIM))
-        .title(format!(" {}{state} ", view.title()));
+        .border_style(if selected {
+            Style::new().fg(Color::Cyan)
+        } else {
+            Style::new().fg(DIM)
+        })
+        .title(format!(
+            " {}{}{state} ",
+            if selected { "▸ " } else { "" },
+            view.title()
+        ));
     let Some(data) = data else {
         frame.render_widget(Paragraph::new("loading...".fg(DIM)).block(block), area);
         return;
     };
     match &data.content {
         ViewContent::Text(text) => frame.render_widget(
-            Paragraph::new(text.trim_end().to_string()).block(block),
+            Paragraph::new(text.trim_end().to_string())
+                .scroll((scroll, 0))
+                .block(block),
             area,
         ),
         ViewContent::Error(e) => frame.render_widget(
             Paragraph::new(e.trim_end().to_string().fg(ERR))
                 .wrap(Wrap { trim: false })
+                .scroll((scroll, 0))
                 .block(block),
             area,
         ),
@@ -382,6 +437,7 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
             let table = Table::new(
                 t.rows
                     .iter()
+                    .skip(scroll as usize)
                     .map(|r| Row::new(r.iter().map(|c| Cell::from(cell_text(c))))),
                 widths,
             )
@@ -390,6 +446,10 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
             frame.render_widget(table, area);
         }
         ViewContent::Metrics(metrics) => {
+            if view.kind == ViewKind::Chart {
+                draw_chart(frame, app, &tag, view, metrics, block, area);
+                return;
+            }
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let rows = Layout::vertical(vec![Constraint::Length(1); metrics.len()]).split(inner);
@@ -408,13 +468,7 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
                     label,
                 );
                 if let Some(h) = app.history.get(&format!("{tag}:{}", metric.name)) {
-                    let min = h.iter().cloned().fold(f64::INFINITY, f64::min);
-                    let max = h.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    let span = (max - min).max(f64::EPSILON);
-                    let points: Vec<u64> = h
-                        .iter()
-                        .map(|v| (((v - min) / span) * 100.0) as u64)
-                        .collect();
+                    let points = spark_points(h);
                     frame.render_widget(
                         Sparkline::default()
                             .data(&points)
@@ -426,6 +480,161 @@ fn draw_view(frame: &mut Frame, app: &App, plugin: &str, view: &super::manifest:
             }
         }
     }
+}
+
+/**
+ * Line chart of one metric, using the history the TUI already keeps for a
+ * streaming or periodically refreshed metrics view. On a short panel (a watch,
+ * for example) it falls back to the compact sparkline.
+ */
+fn draw_chart(
+    frame: &mut Frame,
+    app: &App,
+    tag: &str,
+    view: &super::manifest::View,
+    metrics: &[Metric],
+    block: Block<'_>,
+    area: Rect,
+) {
+    let chosen = app
+        .chart_metric
+        .get(tag)
+        .map(String::as_str)
+        .or(view.metric.as_deref());
+    let metric = match chosen {
+        Some(name) => metrics.iter().find(|m| m.name == name),
+        None => metrics.first(),
+    }
+    .or_else(|| metrics.first());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(metric) = metric else {
+        frame.render_widget(
+            Paragraph::new("chart: the output has no metrics")
+                .wrap(Wrap { trim: true })
+                .style(Style::new().fg(ERR)),
+            inner,
+        );
+        return;
+    };
+    let unit = metric.unit.as_deref().unwrap_or("");
+    let Some(history) = app
+        .history
+        .get(&format!("{tag}:{}", metric.name))
+        .filter(|h| !h.is_empty())
+    else {
+        frame.render_widget(Paragraph::new("waiting for samples...").fg(DIM), inner);
+        return;
+    };
+    let (min, max) = history
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(*v), hi.max(*v))
+        });
+    let header = Line::from(vec![
+        Span::raw(format!("{}: ", metric.name)),
+        Span::styled(
+            format!("{:.3} {unit}", metric.value),
+            Style::new().fg(Color::Cyan).bold(),
+        ),
+        Span::styled(
+            format!("   min {min:.3}  max {max:.3}  ({} samples)", history.len()),
+            Style::new().fg(DIM),
+        ),
+        Span::styled(metric_hint(metrics, metric), Style::new().fg(DIM)),
+    ]);
+    if inner.height < 5 || inner.width < 24 {
+        let [head, spark] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+        frame.render_widget(Paragraph::new(header), head);
+        frame.render_widget(
+            Sparkline::default()
+                .data(spark_points(history))
+                .max(100)
+                .style(Style::new().fg(OK)),
+            spark,
+        );
+        return;
+    }
+    let [head, chart_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    frame.render_widget(Paragraph::new(header), head);
+
+    // Leave a small margin so the line does not touch the axes
+    let span = max - min;
+    let pad = if span > f64::EPSILON {
+        span * 0.1
+    } else {
+        max.abs().max(1.0) * 0.1
+    };
+    let lo = min - pad;
+    let hi = max + pad;
+    let points: Vec<(f64, f64)> = history
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as f64, *v))
+        .collect();
+    let last = history.len().saturating_sub(1).max(1) as f64;
+    let data = Dataset::default()
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::new().fg(OK))
+        .data(&points);
+    let chart = Chart::new(vec![data])
+        .x_axis(
+            Axis::default()
+                .bounds([0.0, last])
+                .style(Style::new().fg(DIM))
+                .title(Span::styled("time ->", Style::new().fg(DIM))),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([lo, hi])
+                .style(Style::new().fg(DIM))
+                .labels([axis_value(lo), axis_value((lo + hi) / 2.0), axis_value(hi)]),
+        );
+    frame.render_widget(chart, chart_area);
+}
+
+/**
+ * Position of the charted metric and the key that switches it, for panels
+ * whose plugin publishes more than one metric
+ */
+fn metric_hint(metrics: &[Metric], current: &Metric) -> String {
+    if metrics.len() < 2 {
+        return String::new();
+    }
+    let pos = metrics
+        .iter()
+        .position(|m| m.name == current.name)
+        .unwrap_or(0);
+    format!("  m: next ({}/{})", pos + 1, metrics.len())
+}
+
+fn axis_value(value: f64) -> String {
+    let abs = value.abs();
+    if abs >= 100.0 {
+        format!("{value:.0}")
+    } else if abs >= 10.0 {
+        format!("{value:.1}")
+    } else if abs >= 1.0 {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+/**
+ * Normalizes a history window to 0..100 for a Sparkline
+ */
+fn spark_points(history: &std::collections::VecDeque<f64>) -> Vec<u64> {
+    let min = history.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = history.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let span = (max - min).max(f64::EPSILON);
+    history
+        .iter()
+        .map(|v| (((v - min) / span) * 100.0) as u64)
+        .collect()
 }
 
 fn draw_log(frame: &mut Frame, app: &App, area: Rect) {

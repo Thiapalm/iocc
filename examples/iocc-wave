@@ -36,6 +36,12 @@ case "$1" in
   "views": [
     {"id": "live", "label": "Live signals", "kind": "metrics", "stream": true,
      "command": ["stream"]},
+    {"id": "voltage", "label": "Voltage graph", "kind": "chart", "metric": "Voltage",
+     "stream": true, "command": ["graph"]},
+    {"id": "current", "label": "Current graph", "kind": "chart", "metric": "Current",
+     "stream": true, "command": ["graph"]},
+    {"id": "power", "label": "Power graph", "kind": "chart", "metric": "Power",
+     "stream": true, "command": ["graph"]},
     {"id": "stats", "label": "Window stats", "kind": "table", "device": "shared",
      "refresh_ms": 2000, "command": ["stats"]},
     {"id": "guide", "label": "What to try", "kind": "text", "device": "shared",
@@ -73,6 +79,15 @@ watch)
         sleep 0.2
     done
     ;;
+graph)
+    # Slower stream for the chart panel: 120 samples cover one minute
+    i=0
+    while :; do
+        sample "$i" || exit 0
+        i=$((i + 1))
+        sleep 0.5
+    done
+    ;;
 stats)
     # A snapshot, refreshed by the TUI every 2s
     t=$(date +%s)
@@ -88,12 +103,18 @@ This plugin is a fake instrument: it never touches the USB device.
 
 Try this:
   1. press p here to pin "Live signals"  (it becomes a Watch)
-  2. select the other demo plugin and pin its panel too
-  3. switch to another tab: both watches keep updating
-  4. run "Apply load for 4s": it is shared, so the watches stay live
-  5. run "Use the device for 3s": it is exclusive, so the watches show
+  2. press ] to reach "Voltage graph", "Current graph" and "Power graph":
+     p on each one pins all three charts, so they stay side by side in
+     Watches; m cycles the series of the selected chart
+  3. press [ or ] to pick another panel and p to pin it too
+  4. select the other demo plugin and pin one of its panels
+  5. switch to another tab: all watches keep updating
+  6. run "Apply load for 4s": it is shared, so the watches stay live
+  7. run "Use the device for 3s": it is exclusive, so the watches show
      "paused" and restart when it finishes
 
+Press g to record the pinned metrics to CSV.
+Press z to zoom the graph and see its axes; m switches the series.
 Press P on the Plugins tab to unpin everything.
 TEXT
     ;;

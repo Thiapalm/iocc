@@ -28,8 +28,24 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: templates/iocc-plugin -> target
+      - name: Install libudev (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libusb-1.0-0-dev pkg-config
+      - run: cargo fmt --check --manifest-path templates/iocc-plugin/Cargo.toml
+      - run: cargo clippy --manifest-path templates/iocc-plugin/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path templates/iocc-plugin/Cargo.toml
+
   release:
-    needs: check
+    needs: [check, template]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:

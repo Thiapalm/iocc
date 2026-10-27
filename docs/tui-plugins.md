@@ -47,7 +47,8 @@ continuously — the panel would keep showing `paused`/`stopped`.
 |-------|-------|
 | `protocol` | must be `1` |
 | `views[].label` | panel title; defaults to the view `id` |
-| `views[].kind` | `text` (default), `table` or `metrics` |
+| `views[].kind` | `text` (default), `table`, `metrics` or `chart` |
+| `views[].metric` | for `chart`: the series shown first; defaults to the first metric of the output (`m` cycles) |
 | `views[].refresh_ms` | optional; without it the view is loaded once and kept until `R` reloads the manifests. Ignored when `stream` is set |
 | `views[].stream` | `true`: start the command once and read one update per stdout line |
 | `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
@@ -57,8 +58,23 @@ continuously — the panel would keep showing `paused`/`stopped`.
 
 `command` holds the arguments passed to the plugin (without the program name). A view without
 `refresh_ms` is a one-shot snapshot: it is loaded once and kept until `R` reloads the manifests. A
-`stream` view keeps its process running; `text` views append lines (keeping the last 200) while `table`
-and `metrics` views replace their content on every line.
+`stream` view keeps its process running; `text` views append lines (keeping the last 200) while `table`,
+`metrics` and `chart` views replace their content on every line.
+
+## Saving configuration
+
+`iocc` exports `IOCC_CONFIG` (the path of the shared `config.yaml`) for every plugin command **and**
+for manifest requests. A plugin that changes a setting should write it back to its own section, so the
+next run starts where the previous one stopped instead of re-applying the defaults.
+
+The manifest is the right place to publish those values: generate it from the saved configuration and
+use `args[].default` for the current ones. The TUI asks for the manifest again after a successful
+action and on `R`, so the next prompt already shows what was saved. `iocc-powmon`, for example,
+rewrites only the `powmon.chip.mode` / `powmon.chip.maxcurrent` lines and fills the *Calibrate* and
+*Set mode* defaults from them.
+
+`iocc` never rewrites an existing `config.yaml`; it only creates the template when the file is
+missing.
 
 ## Sharing the device between plugins
 
@@ -76,19 +92,27 @@ exists on Unix.
 Protocol: one JSON object per line, one response line each.
 
 ```jsonc
-// request                              // response
-{"id":1,"op":"info","address":74}       {"id":1,"ok":true,"info":"MCP rev A.6 ..."}
-{"id":2,"op":"read","address":74,"register":2,"count":2}
-                                       {"id":2,"ok":true,"data":[18,171]}
-{"id":3,"op":"write","address":74,"register":5,"data":[1,2]}
-                                       {"id":3,"ok":true}
-// errors: {"id":3,"ok":false,"error":"..."}
+// request                                       // response
+{"id":1,"op":"ping"}                             {"id":1,"ok":true,"protocol":1,"version":"1.2.0"}
+{"id":2,"op":"status"}                           {"id":2,"ok":true,"info":"MCP rev A.6 ..."}
+{"id":3,"op":"scan"}                             {"id":3,"ok":true,"info":"MCP rev A.6 ...","devices":[32,74]}
+{"id":4,"op":"info","address":74}                {"id":4,"ok":true,"info":"MCP rev A.6 ...","address":74}
+{"id":5,"op":"read","address":74,"register":2,"count":2}
+                                                 {"id":5,"ok":true,"data":[18,171]}
+{"id":6,"op":"write","address":74,"register":5,"data":[1,2]}
+                                                 {"id":6,"ok":true}
+{"id":7,"op":"gpio_read","pin":0}                {"id":7,"ok":true,"pin":0,"value":true}
+{"id":8,"op":"gpio_write","pin":0,"value":true}  {"id":8,"ok":true,"pin":0,"value":true}
+// errors: {"id":8,"ok":false,"error":"..."}
 ```
 
 `address` is 7 bit, `register` is the register written before reading, `count` is clamped to 1..256 and
 `data` is the byte list written after the register. `info` also needs `address` (any valid one) and
-returns the chip information. `id` is optional; when present it is echoed in the response. Invalid
-JSON, unknown ops and device errors answer `{"ok":false,"error":"..."}`.
+returns the chip information. `scan` returns the same information plus the addresses that answered.
+`pin` is 0..3; `gpio_write` configures the pin as an output (keeping the other pins) and `gpio_read`
+fails when the pin is not configured as GPIO. `ping` does not touch the device. `id` is optional; when
+present it is echoed in the response. Invalid JSON, unknown ops and device errors answer
+`{"ok":false,"error":"..."}`.
 
 Rules:
 
@@ -103,8 +127,19 @@ Rules:
 - The socket is only created on Unix; elsewhere shared views show an error panel and shared actions
   refuse to run, while exclusive ones are unchanged.
 - Command line use is unchanged: `iocc <name> ...` never sets `IOCC_SOCKET`, so the plugin still opens
-  the device itself. Only the TUI sets it, and only for `shared` views/actions. The native
-  `iocc scan`/`read`/`write` commands do not speak the protocol and always open the device directly.
+  the device itself. Only the TUI sets it, and only for `shared` views/actions.
+- The native `iocc status`/`scan`/`read`/`write` commands open the device directly by default
+  (`iocc read ...`), but accept `--via-tui` to go through a running TUI instead:
+
+  ```sh
+  iocc --via-tui status
+  iocc --via-tui scan
+  iocc --via-tui read -a 4A -r 02 -e 2
+  iocc --via-tui write -a 4A -r 02 -d 01
+  ```
+
+  It uses `IOCC_SOCKET` or `$XDG_RUNTIME_DIR/iocc.sock`; export `IOCC_SOCKET` when the TUI was started
+  with a custom path. The flag is rejected for `iocc tui` and plugins (plugins use `IOCC_SOCKET`).
 - To use a shared plugin from another terminal while the TUI is open, export the path yourself:
 
   ```sh
@@ -113,6 +148,16 @@ Rules:
 
   This works because the command line inherits the environment; it only helps plugins that implement
   the protocol.
+
+In Rust, the [`iocc-bus`](../iocc-bus) crate implements this protocol (Unix; the `Bus` stubs return
+`Unsupported` elsewhere), so a plugin can just call the typed methods:
+
+```rust
+let mut bus = iocc_bus::Bus::connect()?;
+let scan = bus.scan()?;
+println!("{} {:?}", scan.info, scan.devices);
+let data = bus.read(0x4A, 0x02, 2)?;
+```
 
 A minimal client (Python, Unix) for the example above:
 
@@ -129,27 +174,53 @@ print(reply["data"] if reply["ok"] else reply["error"])
 
 For streams, send a request per sample and read one line per request; there is no subscription op.
 
-## Pinning panels
+## Pinning panels and recording
 
-Press `p` on the Plugins tab to **pin** the panel of the selected plugin. Pinned panels are drawn in
-the *Watches* column on every tab and keep updating while other plugins are used.
+Press `[`/`]` on the Plugins tab to select a panel (the title gets a `▸`) and `p` to **pin** it. Pinned
+panels are drawn in the *Watches* column on every tab and keep updating while other plugins are used.
 
-- Pinning picks the plugin's first `stream` view; if it has none, the first view. There is no panel
-  selector yet, so a plugin with several panels pins only the first one.
-- One panel per plugin: pressing `p` on the same plugin again unpins it. Pin several **different**
-  plugins to have several watches; the column splits its height evenly between them.
-- `P` unpins everything.
+- The panel selection is per plugin and wraps around. `p` toggles the selected panel, so a plugin can
+  have several pinned panels (for example its live stream and a snapshot table).
+- `x` unpins the selected panel, `P` unpins everything and `,`/`.` move the selected watch up/down.
+- When the column cannot show every watch, `PageUp`/`PageDown` scrolls the window; the title shows
+  `1-3/6` style ranges.
 - A pinned snapshot view (no `stream`) keeps refreshing with its `refresh_ms`, just like the plugin
   panel.
+- `z` zooms the selected panel to the full body (the plugin list and actions are hidden); `z` again
+  returns. `Ctrl+↑`/`Ctrl+↓` scrolls the selected panel (10 lines with `Ctrl+PageUp`/`Ctrl+PageDown`).
 - On the Registers tab `p` toggles polling instead; pinning only works on the Plugins tab.
 - The streams of the plugin currently selected keep running when you switch tabs (they are just not
   drawn); pinned ones are also drawn everywhere.
+
+### Recording to CSV
+
+Press `g` on the Plugins tab to start recording the **pinned `metrics` panels**; press `g` again to
+stop. The header shows a red `REC` while it runs, and starting/stopping writes the file path to the
+log. The default file is `iocc-record-<timestamp>.csv` in the current directory; set `IOCC_RECORD` to
+use another path.
+
+The long format has one row per metric sample:
+
+```csv
+timestamp_ms,plugin,view,metric,unit,value
+1770000000123,powmon,live,Current,A,1.523
+```
+
+Fields containing a comma, quote or newline are quoted, and each sample is flushed, so an interrupted
+TUI keeps the data written so far. Snapshot metrics refresh at their own pace; a stream that stops
+simply stops producing rows.
 
 ## View output formats
 
 - `text`: shown as is (streaming text keeps the last 200 lines).
 - `table`: `{"columns": ["Port", "State"], "rows": [["a", "on"], ["b", 0]]}`
 - `metrics`: `{"metrics": [{"name": "Voltage", "value": 12.1, "unit": "V"}]}`, shown with a sparkline of the last 120 samples.
+- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
+
+```json
+{"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
+ "stream": true, "device": "shared", "command": ["watch", "--json", "--interval-ms", "500"]}
+```
 
 A non zero exit code shows stdout/stderr in red instead.
 
@@ -164,6 +235,9 @@ A non zero exit code shows stdout/stderr in red instead.
 | `this panel needs the device broker (shared device), unavailable here` | the platform is not Unix, or the TUI could not create the socket. |
 | Watches show `paused` | an exclusive action is running; they restart automatically when it finishes. |
 | A `shared` action is refused | there is no broker socket (not Unix, or a stale `IOCC_SOCKET`); see above. |
+| `pin a metrics panel before recording (p)` | `g` records only pinned `metrics` views; pin one first. |
+| `Error: no broker socket ...` with `--via-tui` | the TUI is not running, or it uses a custom `IOCC_SOCKET` that is not exported in this shell. |
+| Recording file is not where expected | the path is in the log when recording starts; set `IOCC_RECORD` to choose it. |
 
 ## Try it
 
@@ -172,7 +246,7 @@ Two complete shell examples need no hardware:
 | Plugin | Shows |
 |---|---|
 | `examples/iocc-demo` | stream/table/text views, all argument kinds, confirm, shared and exclusive actions |
-| `examples/iocc-wave` | simulated signals built for pinning: two watchable panels plus a shared and an exclusive action |
+| `examples/iocc-wave` | simulated signals built for pinning: three chart panels you can pin together plus a shared and an exclusive action |
 
 From the repository root, after `cargo build`:
 
@@ -181,17 +255,39 @@ From the repository root, after `cargo build`:
 ```
 
 The launcher puts `examples/` in `PATH` and sets a fixed `IOCC_SOCKET`. Then, on tab 3,
-pin the panel of each plugin with `p`: both stay live in *Watches* on every tab. Run
-`Apply load for 4s` (shared) and the watches keep updating; run `Use the device for 3s`
-(exclusive) and they show `paused` before restarting. See `examples/README.md` for the
-full walkthrough, including using the broker from another terminal.
+pick a panel with `[`/`]` and pin it with `p`: both plugins stay live in *Watches* on every
+tab. The demo also has a *Ports* table you can pin alongside *Live sensors* to have two
+watches from the same plugin. Run `Apply load for 4s` (shared) and the watches keep
+updating; run `Use the device for 3s` (exclusive) and they show `paused` before
+restarting. Press `g` to record the pinned metrics to CSV. See `examples/README.md` for
+the full walkthrough, including using the broker from another terminal.
+
+## Starter template (Rust)
+
+[`templates/iocc-plugin`](../templates/iocc-plugin) is a standalone crate that already implements this
+contract: a manifest with `metrics`/`chart`/`table`/`text` views and shared/exclusive actions, a bus
+that uses the broker when `IOCC_SOCKET` is set and the MCP2221 otherwise, configuration defaults and
+`save_setting` for the persisted action values, with tests for each part. The register map in
+`src/device.rs` is imaginary: that is the only hardware-specific file to rewrite.
+
+```sh
+templates/new-plugin.sh temp-sensor ../iocc-temp-sensor
+cd ../iocc-temp-sensor
+cargo test
+cargo install --path .
+iocc tui
+```
+
+The helper copies the directory and renames `mydev` in the package, binary, config section and docs.
+The crate depends on [`iocc-bus`](../iocc-bus); outside this repository, swap the `path` dependency for
+the git branch/tag shown in the template README.
 
 ## Keys
 
 | Tab | Keys |
 |-----|------|
-| all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `q` quit |
+| all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `PageUp`/`PageDown` scroll the Watches column, `q` quit |
 | Scan | arrows move, `Enter` opens the address in Registers, `s` rescan, `i` device info |
 | Registers | `↑↓` select, `Enter` write byte, `r` read, `p` poll, `a`/`g`/`n` address/start/count, `m` read-only |
-| Plugins | `↑↓` plugin, `Enter`/`→` actions, `Esc` back, `p` pin panel, `P` unpin all, `R` reload manifests |
+| Plugins | `↑↓` plugin, `[`/`]` panel, `Enter`/`→` actions, `Esc` back, `p` pin/unpin, `x` unpin, `,`/`.` reorder, `z` zoom, `g` CSV, `m` next metric on a chart panel, `Ctrl+↑`/`Ctrl+↓` scroll panel, `P` unpin all, `R` reload manifests |
 | Log | `↑↓` scroll, `c` clear |
