@@ -1421,6 +1421,8 @@ mod tests {
             refresh_ms: None,
             stream: true,
             metric: None,
+            min: None,
+            max: None,
             device: DeviceAccess::Exclusive,
         }
     }
@@ -1564,6 +1566,8 @@ mod tests {
             refresh_ms: None,
             stream: false,
             metric: Some("Current".into()),
+            min: None,
+            max: None,
             device: DeviceAccess::Shared,
         };
         app.plugins = vec![PluginEntry {
@@ -1607,6 +1611,57 @@ mod tests {
     }
 
     #[test]
+    fn chart_can_fix_the_axis_for_a_discrete_metric() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Ignition".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Ignition".into()),
+            min: Some(0.0),
+            max: Some(1.0),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let history = app.history.entry(format!("{tag}:Ignition")).or_default();
+        history.extend([0.0, 1.0, 0.0]);
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(vec![Metric {
+                    name: "Ignition".into(),
+                    value: 0.0,
+                    unit: None,
+                }]),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        // Fixed bounds keep the axis at 0..1 instead of padding it to -0.1..1.1
+        assert!(screen.contains("min 0  max 1"), "{screen}");
+        assert!(screen.contains("0.5"), "{screen}");
+        assert!(!screen.contains("-0.100"), "{screen}");
+        assert!(screen.contains("Ignition: 0"), "{screen}");
+    }
+
+    #[test]
     fn chart_cycles_metrics_with_m() {
         let mut app = App::new_for_tests(&Iocc::default());
         let view = View {
@@ -1617,6 +1672,8 @@ mod tests {
             refresh_ms: None,
             stream: false,
             metric: Some("Current".into()),
+            min: None,
+            max: None,
             device: DeviceAccess::Shared,
         };
         app.plugins = vec![PluginEntry {

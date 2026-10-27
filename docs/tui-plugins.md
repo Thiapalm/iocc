@@ -49,6 +49,7 @@ continuously — the panel would keep showing `paused`/`stopped`.
 | `views[].label` | panel title; defaults to the view `id` |
 | `views[].kind` | `text` (default), `table`, `metrics` or `chart` |
 | `views[].metric` | for `chart`: the series shown first; defaults to the first metric of the output (`m` cycles) |
+| `views[].min` / `views[].max` | for `chart`: fixed y-axis bounds (both are required and `max > min`); leave them out to pad the axis around the samples. Useful for discrete `0/1` signals |
 | `views[].refresh_ms` | optional; without it the view is loaded once and kept until `R` reloads the manifests. Ignored when `stream` is set |
 | `views[].stream` | `true`: start the command once and read one update per stdout line |
 | `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
@@ -215,11 +216,15 @@ simply stops producing rows.
 - `text`: shown as is (streaming text keeps the last 200 lines).
 - `table`: `{"columns": ["Port", "State"], "rows": [["a", "on"], ["b", 0]]}`
 - `metrics`: `{"metrics": [{"name": "Voltage", "value": 12.1, "unit": "V"}]}`, shown with a sparkline of the last 120 samples.
-- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
+- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record. Add `"min"` and `"max"` to fix the y axis (for a discrete `0/1` signal, for example) instead of padding it around the samples.
 
 ```json
 {"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
  "stream": true, "device": "shared", "command": ["watch", "--json", "--interval-ms", "500"]}
+
+{"id": "ignition", "label": "Ignition graph", "kind": "chart", "metric": "Ignition",
+ "min": 0, "max": 1, "stream": true, "device": "shared",
+ "command": ["watch", "--json", "--interval-ms", "500"]}
 ```
 
 A non zero exit code shows stdout/stderr in red instead.

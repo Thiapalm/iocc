@@ -15,6 +15,11 @@ const ERR: Color = Color::Red;
 const CHANGED: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
 
+/// Width reserved for the y-axis labels. Keeping it constant across charts
+/// makes the graph area start at the same column when panels are stacked in the
+/// *Watches* column, even when one axis has decimals and another does not.
+const CHART_LABEL_WIDTH: usize = 8;
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -531,14 +536,26 @@ fn draw_chart(
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
             (lo.min(*v), hi.max(*v))
         });
+    // A plugin can pin the axis for discrete signals (0/1, states, limits).
+    // Without both bounds the axis keeps a 10% margin around the samples.
+    let fixed = match (view.min, view.max) {
+        (Some(lo), Some(hi)) if hi > lo => Some((lo, hi)),
+        _ => None,
+    };
+    let format_value = |value: f64| chart_value(value, fixed.is_some());
     let header = Line::from(vec![
         Span::raw(format!("{}: ", metric.name)),
         Span::styled(
-            format!("{:.3} {unit}", metric.value),
+            format!("{} {unit}", format_value(metric.value)),
             Style::new().fg(Color::Cyan).bold(),
         ),
         Span::styled(
-            format!("   min {min:.3}  max {max:.3}  ({} samples)", history.len()),
+            format!(
+                "   min {}  max {}  ({} samples)",
+                format_value(min),
+                format_value(max),
+                history.len()
+            ),
             Style::new().fg(DIM),
         ),
         Span::styled(metric_hint(metrics, metric), Style::new().fg(DIM)),
@@ -560,15 +577,16 @@ fn draw_chart(
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     frame.render_widget(Paragraph::new(header), head);
 
-    // Leave a small margin so the line does not touch the axes
-    let span = max - min;
-    let pad = if span > f64::EPSILON {
-        span * 0.1
-    } else {
-        max.abs().max(1.0) * 0.1
-    };
-    let lo = min - pad;
-    let hi = max + pad;
+    // Without fixed bounds, leave a small margin so the line does not touch the axes
+    let (lo, hi) = fixed.unwrap_or_else(|| {
+        let span = max - min;
+        let pad = if span > f64::EPSILON {
+            span * 0.1
+        } else {
+            max.abs().max(1.0) * 0.1
+        };
+        (min - pad, max + pad)
+    });
     let points: Vec<(f64, f64)> = history
         .iter()
         .enumerate()
@@ -591,7 +609,7 @@ fn draw_chart(
             Axis::default()
                 .bounds([lo, hi])
                 .style(Style::new().fg(DIM))
-                .labels([axis_value(lo), axis_value((lo + hi) / 2.0), axis_value(hi)]),
+                .labels(chart_axis_labels(lo, hi, fixed.is_some())),
         );
     frame.render_widget(chart, chart_area);
 }
@@ -622,6 +640,55 @@ fn axis_value(value: f64) -> String {
     } else {
         format!("{value:.3}")
     }
+}
+
+/**
+ * Y-axis labels, left padded to the same width for every chart so the graph
+ * area starts at the same column when panels are stacked in *Watches*.
+ */
+fn chart_axis_labels(lo: f64, hi: f64, fixed: bool) -> [String; 3] {
+    let format = |value: f64| {
+        if fixed {
+            compact_value(value)
+        } else {
+            axis_value(value)
+        }
+    };
+    let labels = [format(lo), format((lo + hi) / 2.0), format(hi)];
+    let width = labels
+        .iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(CHART_LABEL_WIDTH);
+    labels.map(|label| format!("{label:>width$}"))
+}
+
+/**
+ * Value shown in a chart header. Fixed axes (0/1 states, for example) use the
+ * shortest form instead of three decimals, so the panel reads "1" and not
+ * "1.000".
+ */
+fn chart_value(value: f64, fixed: bool) -> String {
+    if fixed {
+        compact_value(value)
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+/**
+ * Shortest representation with at most three decimals: 0, 1, 0.5, 12.25
+ */
+fn compact_value(value: f64) -> String {
+    if value == 0.0 {
+        return "0".into();
+    }
+    if value.fract() == 0.0 {
+        return format!("{value:.0}");
+    }
+    let text = format!("{value:.3}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /**
@@ -682,4 +749,40 @@ fn draw_prompt(frame: &mut Frame, _app: &App, prompt: &super::Prompt) {
             .block(Block::bordered().title(format!(" {} ", prompt.title))),
         popup,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chart_axis_labels_share_the_same_width() {
+        let labels = chart_axis_labels(0.0, 1.0, true);
+        assert_eq!(
+            labels,
+            [
+                "       0".to_string(),
+                "     0.5".to_string(),
+                "       1".to_string()
+            ]
+        );
+
+        // Decimals or not, every chart reserves CHART_LABEL_WIDTH columns
+        let labels = chart_axis_labels(1.0, 1.4, false);
+        assert!(
+            labels
+                .iter()
+                .all(|label| label.chars().count() == CHART_LABEL_WIDTH)
+        );
+        assert_eq!(labels[0].trim(), "1.00");
+        assert_eq!(labels[2].trim(), "1.40");
+    }
+
+    #[test]
+    fn chart_axis_labels_grow_together_for_wide_values() {
+        let labels = chart_axis_labels(0.0, 12_345_678.5, true);
+        let width = labels[2].chars().count();
+        assert!(width > CHART_LABEL_WIDTH, "{labels:?}");
+        assert!(labels.iter().all(|label| label.chars().count() == width));
+    }
 }
