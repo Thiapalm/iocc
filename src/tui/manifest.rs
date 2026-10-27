@@ -54,6 +54,11 @@ pub struct View {
     pub stream: bool,
     /// Metric drawn by a `chart` view; defaults to the first metric of the output
     pub metric: Option<String>,
+    /// Fixed y axis bounds for a `chart` view. Both must be set and `max > min`;
+    /// without them the axis is padded around the samples. Useful for discrete
+    /// signals such as 0/1 states.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
     /// `shared` means the command uses the TUI device broker (IOCC_SOCKET) instead of
     /// opening the USB device, so it can run while other plugins also use the bus
     #[serde(default)]
