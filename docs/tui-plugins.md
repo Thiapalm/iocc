@@ -93,6 +93,10 @@ then a per process file in the temp directory (only reachable through the variab
 is no runtime dir). It is created with mode `0600` and recreated when the TUI starts. The broker only
 exists on Unix.
 
+The Terminal tab exports the same socket to the shell it starts (`IOCC_TERMINAL=1` marks the session),
+so a command typed there finds the broker automatically: `iocc scan`, `iocc bench on` or a plugin run
+from that shell share the chip with the TUI instead of failing with "resource busy".
+
 Protocol: one JSON object per line, one response line each.
 
 ```jsonc
@@ -293,8 +297,9 @@ the git branch/tag shown in the template README.
 
 | Tab | Keys |
 |-----|------|
-| all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `PageUp`/`PageDown` scroll the Watches column, `q` quit |
+| all | `Tab`/`Shift+Tab` or `1`-`5` switch tab, `PageUp`/`PageDown` scroll the Watches column (the shell history on Terminal), `q` quit |
 | Scan | arrows move, `Enter` opens the address in Registers, `s` rescan, `i` device info |
 | Registers | `↑↓` select, `Enter` write byte, `r` read, `p` poll, `a`/`g`/`n` address/start/count, `m` read-only |
 | Plugins | `↑↓` plugin, `[`/`]` panel, `Enter`/`→` actions, `Esc` back, `p` pin/unpin, `x` unpin, `,`/`.` reorder, `z` zoom, `g` CSV, `m` next metric on a chart panel, `Ctrl+↑`/`Ctrl+↓` scroll panel, `P` unpin all, `R` reload manifests |
 | Log | `↑↓` scroll, `c` clear |
+| Terminal | `F12`/`Enter` focus, `F12` release, `PageUp`/`PageDown` scroll the shell history, `Enter` restarts an exited shell. While focused every key (including `Ctrl+C`, `Tab` and `q`) goes to the shell, so use `F12` to return to the TUI |

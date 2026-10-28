@@ -36,7 +36,10 @@ the list; use `↑↓` to reach the demos by name.
      the streams restart after it finishes.
 7. Press `g` to record the pinned metrics to `iocc-record-<timestamp>.csv` in the
    current directory (`g` again stops; `IOCC_RECORD=path` chooses the file).
-8. `P` unpins everything, `q` quits.
+8. Tab **5** (Terminal) and press `F12`: type `iocc scan` or `iocc wave watch` inside the
+   TUI; the shell shares the device with the pinned panels. `F12` releases the keyboard
+   (then `Ctrl+C`/`q` quit as usual) and `PageUp`/`PageDown` scroll the shell history.
+9. `P` unpins everything, `q` quits.
 
 Pinning is per panel, and a plugin may contribute several. When the column cannot show
 all of them, `PageUp`/`PageDown` scrolls the Watches window; `,`/`.` reorder and `x`

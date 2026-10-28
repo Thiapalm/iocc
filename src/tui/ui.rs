@@ -1,5 +1,5 @@
 use super::manifest::{Metric, ViewKind, cell_text};
-use super::{App, TABS, ViewContent, WATCH_PANEL_H, view_tag};
+use super::{App, TABS, TERMINAL_TAB, ViewContent, WATCH_PANEL_H, view_tag};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -41,7 +41,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         0 => draw_scan(frame, app, body),
         1 => draw_regs(frame, app, body),
         2 => draw_plugins(frame, app, body),
-        _ => draw_log(frame, app, body),
+        3 => draw_log(frame, app, body),
+        _ => draw_terminal(frame, app, body),
     }
     draw_footer(frame, app, footer);
     if let Some(prompt) = &app.prompt {
@@ -80,16 +81,28 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if app.terminal_focus {
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", app.status), Style::new().fg(Color::Cyan)),
+            Span::styled(
+                "│ terminal focused · keys go to the shell · F12 releases",
+                Style::new().fg(DIM),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let mut keys = match app.tab {
         0 => "←↑↓→ move · Enter open · s scan · i info",
         1 => "↑↓ · Enter write · r read · p poll · a/g/n set · m read-only",
         2 if app.action_focus => "↑↓ select · Enter run · Esc back",
         2 if app.zoom => "z close · Ctrl+↑↓ scroll · g CSV · P unpin · R reload",
         2 => "↑↓ plugin · [ ] panel · p pin · x unpin · ,/. order · g CSV · z zoom · R reload",
-        _ => "↑↓ scroll · c clear",
+        3 => "↑↓ scroll · c clear",
+        _ => "Enter/F12 type · PgUp/PgDn history · Enter restarts after exit",
     }
     .to_string();
-    if !app.pinned.is_empty() {
+    if !app.pinned.is_empty() && app.tab != TERMINAL_TAB {
         keys.push_str(" · PgUp/PgDn watches");
     }
     let line = Line::from(vec![
@@ -702,6 +715,173 @@ fn spark_points(history: &std::collections::VecDeque<f64>) -> Vec<u64> {
         .iter()
         .map(|v| (((v - min) / span) * 100.0) as u64)
         .collect()
+}
+
+/**
+ * Interactive shell. The vt100 screen is painted cell by cell, grouping cells
+ * with the same style into spans, so colours and attributes from programs like
+ * `ls --color` or `vim` survive. When the tab has the focus the real cursor is
+ * placed at the shell position and F12 releases the keyboard back to the TUI.
+ */
+fn draw_terminal(frame: &mut Frame, app: &App, area: Rect) {
+    let (state, color) = match (&app.terminal, app.terminal_focus) {
+        (Some(_), true) => ("FOCUSED · F12 releases", Color::Cyan),
+        (Some(session), false) if session.exited().is_some() => ("exited", ERR),
+        (Some(_), false) => ("F12 or Enter to type", DIM),
+        (None, _) if app.terminal_error.is_some() => ("failed", ERR),
+        (None, _) => ("starting", DIM),
+    };
+    let shell = app
+        .terminal
+        .as_ref()
+        .map(|session| session.shell().to_string())
+        .unwrap_or_else(|| "shell".to_string());
+    let title = format!(" Terminal · {shell} · {state} ");
+    let block = Block::bordered()
+        .title(title)
+        .border_style(Style::new().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // `tick` applies this to the pty, resizing the shell with the tab
+    app.terminal_size.set((inner.height, inner.width));
+
+    let Some(session) = &app.terminal else {
+        let message = match &app.terminal_error {
+            Some(err) => vec![
+                Line::from("The shell could not be started:".fg(ERR)),
+                Line::from(err.clone().fg(ERR)),
+                Line::from("Enter tries again · F12 returns to the tabs".fg(DIM)),
+            ],
+            None => vec![
+                Line::from("Starting the shell...".fg(DIM)),
+                Line::from("F12 or Enter gives it the keyboard".fg(DIM)),
+            ],
+        };
+        frame.render_widget(Paragraph::new(message), inner);
+        return;
+    };
+
+    frame.render_widget(Clear, inner);
+    draw_terminal_screen(frame, session.screen(), inner);
+
+    if let Some(message) = session.exited() {
+        let line = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Clear, line);
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
+                " {message} · Enter restarts · F12 releases "
+            )))
+            .style(Style::new().fg(Color::Yellow)),
+            line,
+        );
+        return;
+    }
+
+    let (row, column) = session.screen().cursor_position();
+    if app.terminal_focus
+        && !session.screen().hide_cursor()
+        && session.screen().scrollback() == 0
+        && row < inner.height
+        && column < inner.width
+    {
+        frame.set_cursor_position((inner.x + column, inner.y + row));
+    }
+}
+
+fn draw_terminal_screen(frame: &mut Frame, screen: &vt100::Screen, area: Rect) {
+    let (rows, cols) = screen.size();
+    let height = area.height.min(rows.get());
+    let width = area.width.min(cols.get());
+    let mut lines = Vec::with_capacity(height as usize);
+    for row in 0..height {
+        let mut spans = Vec::new();
+        let mut text = String::new();
+        let mut style = Style::new();
+        let mut started = false;
+        for column in 0..width {
+            let Some(cell) = screen.cell(row, column) else {
+                break;
+            };
+            // The wide character itself already covers two columns
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let cell_style = terminal_style(cell);
+            if !started {
+                style = cell_style;
+                started = true;
+            } else if cell_style != style {
+                spans.push(Span::styled(std::mem::take(&mut text), style));
+                style = cell_style;
+            }
+            if cell.has_contents() {
+                text.push_str(cell.contents());
+            } else {
+                text.push(' ');
+            }
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, style));
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn terminal_style(cell: &vt100::Cell) -> Style {
+    let mut style = Style::new()
+        .fg(terminal_color(cell.fgcolor()))
+        .bg(terminal_color(cell.bgcolor()));
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.dim() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.inverse() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+fn terminal_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+        vt100::Color::Idx(index) => match index {
+            0 => Color::Black,
+            1 => Color::Red,
+            2 => Color::Green,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Magenta,
+            6 => Color::Cyan,
+            7 => Color::Gray,
+            8 => Color::DarkGray,
+            9 => Color::LightRed,
+            10 => Color::LightGreen,
+            11 => Color::LightYellow,
+            12 => Color::LightBlue,
+            13 => Color::LightMagenta,
+            14 => Color::LightCyan,
+            15 => Color::White,
+            other => Color::Indexed(other),
+        },
+    }
 }
 
 fn draw_log(frame: &mut Frame, app: &App, area: Rect) {

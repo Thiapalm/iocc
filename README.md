@@ -21,11 +21,12 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 - Can be extended via plugins
 - Can configure default communication parameters via a simple config.yaml file
 - Plugins can also use the same config.yaml file
-- Interactive terminal UI (`iocc tui`): bus scan, register editor, plugin panels and log
+- Interactive terminal UI (`iocc tui`): bus scan, register editor, plugin panels, log and an embedded shell
 - Plugins add panels and actions through a JSON manifest, with no change or recompilation of iocc
 - Streaming panels (one update per stdout line) and pinning to keep monitoring visible while other plugins run
 - Pin several panels (even from the same plugin), reorder them, scroll/zoom a panel and record the pinned metrics to CSV
 - Chart panels (`kind: "chart"`) plot one metric over the 120-sample history, with min/max and a compact sparkline fallback (`m` cycles between the metrics of the sample, `min`/`max` fix the axis for discrete signals)
+- Terminal tab with a real PTY (`F12` gives it the keyboard), so interactive programs run without leaving the TUI; it inherits `IOCC_SOCKET` and commands share the device with a running TUI
 - Device broker (`IOCC_SOCKET`) so plugins and command-line runs can share the MCP2221 with the TUI at the same time
 - Plugin actions can save their settings in `config.yaml`, so the next run and the next prompt start with the new value
 - `iocc config import` merges a plugin's configuration section into `config.yaml` (the plugin installers run it), keeping comments and the sections already there
@@ -34,6 +35,7 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 ## Version Revision
 
 1.2.0 - Broker and panel tooling
+- Terminal tab: a real PTY with the user's shell, `F12` to take/release the keyboard, `Ctrl+C` sent to the shell while focused, and automatic `IOCC_SOCKET` so commands typed there share the device with the TUI
 - `iocc config import <file>` adds the sections of a plugin's config file to the shared `config.yaml` (installers call it automatically)
 - Pin any panel (several from the same plugin), reorder the watches and remove one with `x`
 - Scroll the *Watches* column, zoom a panel and scroll its content
@@ -128,7 +130,7 @@ Instructions on how to use the software.
 iocc tui
 ```
 
-The TUI needs a real terminal (through a pipe or CI it fails with `No such device or address`). It has four tabs, switched with `1`-`4` or `Tab`:
+The TUI needs a real terminal (through a pipe or CI it fails with `No such device or address`). It has five tabs, switched with `1`-`5` or `Tab`:
 
 | Tab | What it does |
 |---|---|
@@ -136,6 +138,9 @@ The TUI needs a real terminal (through a pipe or CI it fails with `No such devic
 | Registers | reads and writes bytes, `p` enables polling, `m` toggles read-only |
 | Plugins | lists the plugins found, with their panels and actions (`R` reloads the manifests) |
 | Log | host messages |
+| Terminal | embedded shell in a real PTY; `F12`/`Enter` focuses it, `F12` releases the keyboard |
+
+The Terminal tab starts the shell (`$SHELL`) the first time the tab opens and keeps it alive while other tabs are used. With the focus, every key goes to the shell (including `Ctrl+C`, `Tab` and `q`); `F12` gives the keyboard back to the TUI, where `Ctrl+C` quits and `q`/`1`-`5` keep working. `PageUp`/`PageDown` scroll the shell history when the focus is released, and `Enter` restarts the shell after it exits. The command runs inside the TUI but shares the device: the shell receives `IOCC_SOCKET` from the broker, so `iocc scan`, plugin commands and `vim`/`top` all work without a second terminal.
 
 On the Plugins tab, the panels declared by the plugin are drawn on the right; `Enter`/`→` opens the actions and `Enter` runs the selected one (`Esc` goes back). `[`/`]` selects a panel (marked with `▸`), `p` pins or unpins it and `x` unpins it. Pinned panels move to the *Watches* column and stay visible on every tab, including while another plugin runs. A plugin can pin several of its panels: `,`/`.` reorders the selected watch, `P` unpins everything and `PageUp`/`PageDown` scrolls the column when the panels do not fit. `z` zooms the selected panel, `Ctrl+↑`/`Ctrl+↓` scrolls it and `g` records the pinned `metrics` panels to CSV (the file path is logged; `IOCC_RECORD` overrides it).
 
@@ -172,7 +177,7 @@ Plugins are built separately from iocc and cannot run on their own: they are alw
 - **Broker client:** the [`iocc-bus`](iocc-bus) crate wraps the JSON protocol (`ping`, `status`, `scan`, `info`, `read`, `write`, `gpio_read`, `gpio_write`), so a `shared` plugin does not have to parse the socket by hand. Until it is published, depend on it from this repository (`path` or `git`).
 - **Starter template:** [`templates/iocc-plugin`](templates/iocc-plugin) is a standalone Rust crate with the manifest, the direct/broker transport and config persistence already wired and tested. Copy it with `templates/new-plugin.sh <name> <dir>` (or by hand) and replace the imaginary register map in `src/device.rs`.
 - **Errors:** write errors to `stderr` and exit with a non-zero code.
-- **Terminal UI (optional):** `iocc tui` opens an interactive interface (bus scan, register editor, plugins, log). A plugin adds its own panels and actions by answering `iocc-<name> --iocc-manifest` with a JSON description, with no change or recompilation of iocc. Streaming panels can be pinned (`p`) to stay visible while other plugins run; plugins that declare `"device": "shared"` use the TUI broker (`IOCC_SOCKET`) so monitoring and actions can share the bus. See [docs/tui-plugins.md](docs/tui-plugins.md); `examples/iocc-demo` and `examples/iocc-wave` are runnable demos (no hardware needed) — start them with `./examples/tui-demo.sh`.
+- **Terminal UI (optional):** `iocc tui` opens an interactive interface (bus scan, register editor, plugins, log and an embedded shell). A plugin adds its own panels and actions by answering `iocc-<name> --iocc-manifest` with a JSON description, with no change or recompilation of iocc. Streaming panels can be pinned (`p`) to stay visible while other plugins run; plugins that declare `"device": "shared"` use the TUI broker (`IOCC_SOCKET`) so monitoring and actions can share the bus. See [docs/tui-plugins.md](docs/tui-plugins.md); `examples/iocc-demo` and `examples/iocc-wave` are runnable demos (no hardware needed) — start them with `./examples/tui-demo.sh`.
 
 ## Contributing
 How to contribute to the project? How to open pull requests?
