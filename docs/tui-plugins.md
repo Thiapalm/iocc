@@ -74,8 +74,11 @@ action and on `R`, so the next prompt already shows what was saved. `iocc-powmon
 rewrites only the `powmon.chip.mode` / `powmon.chip.maxcurrent` lines and fills the *Calibrate* and
 *Set mode* defaults from them.
 
-`iocc` never rewrites an existing `config.yaml`; it only creates the template when the file is
-missing.
+`iocc` never rewrites an existing `config.yaml` on its own; it only creates the template when the
+file is missing. `iocc config import <file>` is the explicit exception: it merges the top level
+sections of another YAML file (such as the `config.yaml` shipped with a plugin) into the shared
+file, keeping existing sections, comments and ordering. Plugin installers run it after copying the
+binary, so the new settings are available on the first run.
 
 ## Sharing the device between plugins
 
@@ -127,28 +130,27 @@ Rules:
   code/stderr in the panel and stays stopped until `R` reloads the manifests.
 - The socket is only created on Unix; elsewhere shared views show an error panel and shared actions
   refuse to run, while exclusive ones are unchanged.
-- Command line use is unchanged: `iocc <name> ...` never sets `IOCC_SOCKET`, so the plugin still opens
-  the device itself. Only the TUI sets it, and only for `shared` views/actions.
-- The native `iocc status`/`scan`/`read`/`write` commands open the device directly by default
-  (`iocc read ...`), but accept `--via-tui` to go through a running TUI instead:
+- Command line use follows the same idea: `iocc <name> ...` sets `IOCC_SOCKET` when a running TUI answers `ping`, so the plugin shares the chip instead of failing with "resource busy". `--direct` leaves the variable unset and the plugin opens the device itself; `--broker` (alias `--via-tui`) requires a broker and fails when none is running.
+- The native `iocc status`/`scan`/`read`/`write` commands also use the detected broker by default. Use `--direct` to keep opening the device directly, or `--broker` to require a running TUI:
 
   ```sh
-  iocc --via-tui status
-  iocc --via-tui scan
-  iocc --via-tui read -a 4A -r 02 -e 2
-  iocc --via-tui write -a 4A -r 02 -d 01
+  iocc status
+  iocc scan
+  iocc read -a 4A -r 02 -e 2
+  iocc write -a 4A -r 02 -d 01
+  iocc --direct status   # ignore a running TUI
+  iocc --broker status   # error if no TUI is running
   ```
 
   It uses `IOCC_SOCKET` or `$XDG_RUNTIME_DIR/iocc.sock`; export `IOCC_SOCKET` when the TUI was started
-  with a custom path. The flag is rejected for `iocc tui` and plugins (plugins use `IOCC_SOCKET`).
-- To use a shared plugin from another terminal while the TUI is open, export the path yourself:
+  with a custom path. `--broker` is rejected for `iocc tui` (which owns the device itself).
+- Plugin commands from another terminal use the same socket automatically, so the chip stays with the
+  TUI:
 
   ```sh
-  IOCC_SOCKET=/run/user/1000/iocc.sock iocc powmon read --json
+  iocc powmon read --json
+  iocc bench on
   ```
-
-  This works because the command line inherits the environment; it only helps plugins that implement
-  the protocol.
 
 In Rust, the [`iocc-bus`](../iocc-bus) crate implements this protocol (Unix; the `Bus` stubs return
 `Unsupported` elsewhere), so a plugin can just call the typed methods:
@@ -241,7 +243,7 @@ A non zero exit code shows stdout/stderr in red instead.
 | Watches show `paused` | an exclusive action is running; they restart automatically when it finishes. |
 | A `shared` action is refused | there is no broker socket (not Unix, or a stale `IOCC_SOCKET`); see above. |
 | `pin a metrics panel before recording (p)` | `g` records only pinned `metrics` views; pin one first. |
-| `Error: no broker socket ...` with `--via-tui` | the TUI is not running, or it uses a custom `IOCC_SOCKET` that is not exported in this shell. |
+| `Error: --broker was given but no iocc broker answered ...` | the TUI is not running, or it uses a custom `IOCC_SOCKET` that is not exported in this shell. Drop `--broker` for automatic/direct access. |
 | Recording file is not where expected | the path is in the log when recording starts; set `IOCC_RECORD` to choose it. |
 
 ## Try it

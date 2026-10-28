@@ -26,20 +26,22 @@ The USBIOExtender board has an I2C connector and a number of IO Pins that can be
 - Streaming panels (one update per stdout line) and pinning to keep monitoring visible while other plugins run
 - Pin several panels (even from the same plugin), reorder them, scroll/zoom a panel and record the pinned metrics to CSV
 - Chart panels (`kind: "chart"`) plot one metric over the 120-sample history, with min/max and a compact sparkline fallback (`m` cycles between the metrics of the sample, `min`/`max` fix the axis for discrete signals)
-- Device broker (`IOCC_SOCKET`) so plugins can share the MCP2221 with the TUI at the same time
+- Device broker (`IOCC_SOCKET`) so plugins and command-line runs can share the MCP2221 with the TUI at the same time
 - Plugin actions can save their settings in `config.yaml`, so the next run and the next prompt start with the new value
-- `iocc --via-tui` runs the native `status`/`scan`/`read`/`write` through a running TUI, and the `iocc-bus` crate gives plugins a ready made broker client
+- `iocc config import` merges a plugin's configuration section into `config.yaml` (the plugin installers run it), keeping comments and the sections already there
+- A running TUI is detected automatically: `status`/`scan`/`read`/`write` and the plugins go through the broker (`--direct` opts out, `--broker`/`--via-tui` requires one), and the `iocc-bus` crate gives plugins a ready made broker client
 
 ## Version Revision
 
 1.2.0 - Broker and panel tooling
+- `iocc config import <file>` adds the sections of a plugin's config file to the shared `config.yaml` (installers call it automatically)
 - Pin any panel (several from the same plugin), reorder the watches and remove one with `x`
 - Scroll the *Watches* column, zoom a panel and scroll its content
 - Chart panels (`kind: "chart"`) plot a metric over the history, with min/max and a compact fallback
 - Record the pinned `metrics` panels to CSV (`g`, `IOCC_RECORD` overrides the path)
 - Device broker gains `ping`, `status`, `scan`, `gpio_read` and `gpio_write`
 - New `iocc-bus` crate so plugins use the broker without reimplementing the protocol
-- `iocc --via-tui` runs `status`/`scan`/`read`/`write` through a running TUI (direct access remains the default)
+- The broker is used automatically on the command line when a TUI is running; `--direct` forces the old exclusive access and `--broker` (alias `--via-tui`) requires a broker
 
 1.1.0 - Terminal UI
 - New interactive terminal UI (`iocc tui`) with scan, register editor, plugin panels and log
@@ -139,17 +141,17 @@ On the Plugins tab, the panels declared by the plugin are drawn on the right; `E
 
 Plugins that declare `"device": "shared"` receive `IOCC_SOCKET` and share the MCP2221 with the TUI through a small broker, so a streaming panel can keep sampling while an action from another plugin uses the bus. Actions that open the device themselves (the default) pause the watches while they run. See [docs/tui-plugins.md](docs/tui-plugins.md) for the protocol and the full key list.
 
-The socket lives in `$XDG_RUNTIME_DIR/iocc.sock` (or at the path given by `IOCC_SOCKET`) and is created with mode `0600`. While the TUI is open, another terminal can use any plugin that speaks the protocol through it, and the native commands can opt into the broker with `--via-tui`:
+The socket lives in `$XDG_RUNTIME_DIR/iocc.sock` (or at the path given by `IOCC_SOCKET`) and is created with mode `0600`. While the TUI is open, the command line finds it automatically: `iocc status`/`scan`/`read`/`write` and `iocc <plugin> ...` use the broker, so they can run while the TUI keeps the MCP2221 open:
 
 ```bash
-IOCC_SOCKET=/run/user/1000/iocc.sock iocc powmon read --json
-
-iocc --via-tui status
-iocc --via-tui scan
-iocc --via-tui read -a 4A -r 02 -e 2
+iocc powmon read --json
+iocc status
+iocc scan
+iocc read -a 4A -r 02 -e 2
+iocc bench set --pin pin3
 ```
 
-Without `--via-tui` the native `iocc status`/`scan`/`read`/`write` commands keep opening the device directly, exactly as before. `--via-tui` does not apply to plugins (they get `IOCC_SOCKET` for `shared` views/actions) nor to `iocc tui`. The broker speaks the same protocol on Unix only.
+The detection pings the socket, so a stale `IOCC_SOCKET` falls back to direct access. Use `--direct` to always open the device (a plugin then receives no `IOCC_SOCKET`, even if the shell exports one), or `--broker` (alias `--via-tui`) to require a broker and fail when no TUI is running. `--broker` does not apply to `iocc tui`. The broker speaks the same protocol on Unix only.
 
 No hardware is needed to try it. The repository ships two demo plugins:
 
@@ -164,9 +166,9 @@ cargo build
 Plugins are built separately from iocc and cannot run on their own: they are always started by iocc (e.g. `iocc powmon status`). iocc itself works without any plugin. The contract between them is:
 
 - **Name and location:** the executable must be named `iocc-<name>` (`.exe` on Windows, name restricted to letters, digits, `-` and `_`) and live in the same folder as `iocc` or in the `PATH`. `iocc <name> <args>` runs it with the remaining arguments and returns its exit code.
-- **Configuration:** the shared file `config.yaml` lives in the system config folder (`<config dir>/iocc/config.yaml`, e.g. `~/.config/iocc/config.yaml` on Linux). Each plugin reads its own top-level section (e.g. `powmon:`) and should fall back to its own defaults if the section is missing. iocc only reads the `iocc:` section and creates the file on first run.
-- **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. From the TUI it also sets `IOCC_TUI=1`, plus `IOCC_SOCKET` for views and actions declared as `shared`. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
-- **Device access:** from the command line iocc does not open the USBIOExtender when running a plugin, so the plugin opens the MCP2221 itself. The TUI keeps the device open instead: plugins default to `exclusive` (the chip is released, the plugin opens it, streams pause and restart afterwards) and can opt into `shared`, where they talk to the broker through `IOCC_SOCKET` while the TUI serializes the transactions.
+- **Configuration:** the shared file `config.yaml` lives in the system config folder (`<config dir>/iocc/config.yaml`, e.g. `~/.config/iocc/config.yaml` on Linux). Each plugin reads its own top-level section (e.g. `powmon:`) and should fall back to its own defaults if the section is missing. iocc only reads the `iocc:` section and creates the file on first run. To ship defaults with a plugin, keep a `config.yaml` in its repository and run `iocc config import config.yaml` from the installer: the missing sections are appended with their comments, existing sections are kept (use `--force` to replace one) and the host `iocc:` section is never imported. Any command or TUI action that changes a setting must write it back to the file before exiting (see `iocc powmon mode` and `iocc bench set`); a `--no-save` flag keeps it temporary.
+- **Environment:** iocc sets `IOCC_HOST=1` and `IOCC_CONFIG=<path to config.yaml>` for the plugin. From the TUI it also sets `IOCC_TUI=1`, plus `IOCC_SOCKET` for views and actions declared as `shared`. On the command line `IOCC_SOCKET` is set to a live broker when a TUI is running (unless `--direct` is used), so the same plugin can share the chip from both places. Plugins should use `IOCC_CONFIG` instead of computing the path, and refuse to run (asking the user to use `iocc <name>`) when `IOCC_HOST` is not set.
+- **Device access:** without `IOCC_SOCKET` the plugin opens the MCP2221 itself. With it, the device belongs to the broker (the TUI or a command-line run that found one) and the plugin must send its transactions through the socket. The TUI keeps the device open: plugins default to `exclusive` (the chip is released, the plugin opens it, streams pause and restart afterwards) and can opt into `shared`, where they use `IOCC_SOCKET` while the host serializes the transactions.
 - **Broker client:** the [`iocc-bus`](iocc-bus) crate wraps the JSON protocol (`ping`, `status`, `scan`, `info`, `read`, `write`, `gpio_read`, `gpio_write`), so a `shared` plugin does not have to parse the socket by hand. Until it is published, depend on it from this repository (`path` or `git`).
 - **Starter template:** [`templates/iocc-plugin`](templates/iocc-plugin) is a standalone Rust crate with the manifest, the direct/broker transport and config persistence already wired and tested. Copy it with `templates/new-plugin.sh <name> <dir>` (or by hand) and replace the imaginary register map in `src/device.rs`.
 - **Errors:** write errors to `stderr` and exit with a non-zero code.

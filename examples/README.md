@@ -51,15 +51,16 @@ IOCC_SOCKET=/run/user/1000/iocc-demo-1000.sock iocc wave watch
 ```
 
 `iocc wave watch` prints one JSON metrics line per sample and, because it implements the
-broker protocol, reads through the TUI instead of touching the device. Without
-`IOCC_SOCKET` it still runs (the demo is fake), but a real plugin would try to open the
-device and find it busy while the TUI holds it.
+broker protocol, reads through the TUI instead of touching the device. iocc finds
+`$XDG_RUNTIME_DIR/iocc.sock` by itself; the export above is only needed because the demo
+launcher uses a custom path. Without a broker a real plugin would try to open the device
+and find it busy while the TUI holds it.
 
-The native commands can also use the broker explicitly:
+The native commands use the same broker automatically:
 
 ```sh
-iocc --via-tui scan
-iocc --via-tui read -a 4A -r 02 -e 2
+iocc scan
+iocc read -a 4A -r 02 -e 2
 ```
 
 Those need real hardware; the demo plugins only simulate the device.

@@ -73,14 +73,7 @@ pub fn find_plugin(plugin_name: &str) -> Option<PathBuf> {
 
 /**
  * Builds the command that runs a plugin, with the environment the host provides
- */
-pub fn plugin_command(path: &Path, args: &[String]) -> Command {
-    plugin_command_with(path, args, None)
-}
-
-/**
- * Same as `plugin_command`, also pointing the plugin at the TUI device broker
- * (`IOCC_SOCKET`) when one is available
+ * (and the device broker when `socket` is given)
  */
 pub fn plugin_command_with(path: &Path, args: &[String], socket: Option<&Path>) -> Command {
     let mut command = Command::new(path);
@@ -88,16 +81,24 @@ pub fn plugin_command_with(path: &Path, args: &[String], socket: Option<&Path>) 
     if let Some(config) = config_path() {
         command.env("IOCC_CONFIG", config);
     }
-    if let Some(socket) = socket {
-        command.env("IOCC_SOCKET", socket);
-    }
+    match socket {
+        Some(socket) => command.env("IOCC_SOCKET", socket),
+        None => command.env_remove("IOCC_SOCKET"),
+    };
     command
 }
 
 /**
- * Execute plugin and return its exit code
+ * Execute plugin and return its exit code, optionally pointing it at the device
+ * broker. The caller decides whether a broker should be used; from the command
+ * line `iocc` passes one when a running TUI answers `ping`.
  */
-pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
+pub fn run_plugin_with_socket(
+    plugin_name: &str,
+    args: &[String],
+    config: &Iocc,
+    socket: Option<&Path>,
+) -> i32 {
     if !is_valid_plugin_name(plugin_name) {
         eprintln!("Invalid plugin name '{plugin_name}'.");
         return 1;
@@ -112,7 +113,7 @@ pub fn run_plugin(plugin_name: &str, args: &[String], config: &Iocc) -> i32 {
         println!("[host] Running plugin: {}", full_path.display());
     }
 
-    let mut command = plugin_command(&full_path, args);
+    let mut command = plugin_command_with(&full_path, args, socket);
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
@@ -176,32 +177,32 @@ mod tests {
     }
 
     /**
-     * The command line must keep handing the device to the plugin: only the TUI
-     * (which owns the chip) passes IOCC_SOCKET
+     * The caller decides the transport: a socket points the plugin at the
+     * broker, and no socket removes any inherited IOCC_SOCKET, so an exclusive
+     * plugin never ends up talking to a broker by accident.
      */
     #[test]
-    fn only_the_tui_points_plugins_at_the_broker() {
+    fn plugin_commands_control_the_broker_variable() {
         let path = Path::new("/bin/true");
         let socket = |command: &Command| {
             command
                 .get_envs()
                 .find(|(key, _)| *key == "IOCC_SOCKET")
-                .and_then(|(_, value)| value)
-                .map(OsStr::to_os_string)
+                .map(|(_, value)| value.map(OsStr::to_os_string))
         };
 
-        assert_eq!(socket(&plugin_command(path, &[])), None);
+        assert_eq!(socket(&plugin_command_with(path, &[], None)), Some(None));
         assert_eq!(
             socket(&plugin_command_with(
                 path,
                 &[],
                 Some(Path::new("/tmp/x.sock"))
             )),
-            Some("/tmp/x.sock".into())
+            Some(Some("/tmp/x.sock".into()))
         );
         // Other host variables are unchanged in both cases
         for command in [
-            plugin_command(path, &[]),
+            plugin_command_with(path, &[], None),
             plugin_command_with(path, &[], Some(Path::new("/tmp/x.sock"))),
         ] {
             assert_eq!(

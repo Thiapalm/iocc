@@ -2,11 +2,13 @@
 //!
 //! `iocc` can hand the MCP2221 to the plugin in two ways:
 //!
-//! - **direct**: on the command line (`iocc mydev read`) the plugin opens the
-//!   USB device itself, exactly like any other `iocc` subcommand;
-//! - **broker**: views and actions declared as `"device": "shared"` receive
-//!   `IOCC_SOCKET` and leave the chip to the running TUI. The same socket lets
-//!   other plugins use the bus while this one keeps sampling.
+//! - **direct**: when no broker is available (`iocc mydev read`, or `--direct`)
+//!   the plugin opens the USB device itself, exactly like any other `iocc`
+//!   subcommand;
+//! - **broker**: iocc sets `IOCC_SOCKET` when a TUI is running (or when the view
+//!   or action is declared `"device": "shared"`) and the plugin leaves the chip
+//!   to the broker. The same socket lets other plugins use the bus while this
+//!   one keeps sampling.
 //!
 //! The [`iocc_bus`] crate implements the broker protocol, so this file only
 //! chooses the transport and hides the difference behind `read`/`write`.
