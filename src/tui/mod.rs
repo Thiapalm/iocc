@@ -3,6 +3,7 @@ mod backend;
 mod broker;
 mod manifest;
 mod record;
+mod terminal;
 mod ui;
 
 use crate::config::Iocc;
@@ -10,12 +11,16 @@ use backend::{DeviceParams, Event as Ev, PluginEntry, Req};
 use manifest::{Action, DeviceAccess, Metric, TableData, View, ViewKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use record::Recorder;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
+use terminal::TerminalSession;
 
-pub const TABS: [&str; 4] = ["Scan", "Registers", "Plugins", "Log"];
+pub const TABS: [&str; 5] = ["Scan", "Registers", "Plugins", "Log", "Terminal"];
+/// Index of the Terminal tab (last one), used by the focus shortcut
+const TERMINAL_TAB: usize = TABS.len() - 1;
 const HISTORY: usize = 120;
 const PENDING_EXPIRE: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -133,6 +138,17 @@ pub struct App {
     pub zoom: bool,
     /// CSV recording of the pinned metrics panels
     recorder: Option<Recorder>,
+
+    /// Interactive shell shown in the Terminal tab (starts when the tab opens)
+    pub terminal: Option<TerminalSession>,
+    /// True while the keys are sent to the shell instead of the TUI
+    pub terminal_focus: bool,
+    /// Why the shell could not be started, shown in the placeholder
+    pub terminal_error: Option<String>,
+    /// Size of the terminal area seen by the last draw, applied to the pty
+    pub terminal_size: Cell<(u16, u16)>,
+    /// Spawn the shell automatically; tests keep it false so drawing never forks
+    terminal_enabled: bool,
 }
 
 pub fn view_tag(plugin: &str, view: &str) -> String {
@@ -149,7 +165,9 @@ fn device_params(config: &Iocc) -> DeviceParams {
 
 impl App {
     fn new(config: &Iocc) -> App {
-        App::with_backend(config, backend::spawn(device_params(config)))
+        let mut app = App::with_backend(config, backend::spawn(device_params(config)));
+        app.terminal_enabled = true;
+        app
     }
 
     #[cfg(test)]
@@ -208,6 +226,11 @@ impl App {
             watch_scroll: 0,
             zoom: false,
             recorder: None,
+            terminal: None,
+            terminal_focus: false,
+            terminal_error: None,
+            terminal_size: Cell::new((24, 80)),
+            terminal_enabled: false,
         }
     }
 
@@ -561,6 +584,23 @@ impl App {
 
     fn tick(&mut self) {
         self.pending.retain(|_, at| at.elapsed() < PENDING_EXPIRE);
+
+        // Keep the terminal drained even on other tabs, so a long command does
+        // not accumulate bytes in the channel while the TUI shows something else.
+        let ended = self.terminal.as_mut().and_then(|session| session.pump());
+        if let Some(message) = ended {
+            self.terminal_focus = false;
+            self.push_log(false, format!("terminal: {message} (Enter restarts)"));
+        }
+        if self.tab == TERMINAL_TAB {
+            if self.terminal.is_none() && self.terminal_error.is_none() {
+                self.ensure_terminal();
+            }
+            if let Some(session) = &mut self.terminal {
+                let (rows, cols) = self.terminal_size.get();
+                session.resize(rows, cols);
+            }
+        }
 
         if self.tab == 1
             && self.reg_poll
@@ -953,6 +993,21 @@ impl App {
     // ---- keyboard -----------------------------------------------------------
 
     fn on_key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if self.terminal_focus {
+            // F12 releases the shell; every other key (including Ctrl+C) is
+            // translated and sent to it.
+            if key.code == KeyCode::F(12) {
+                if key.kind == KeyEventKind::Press {
+                    self.toggle_terminal_focus();
+                }
+            } else {
+                self.on_terminal_key(key);
+            }
+            return;
+        }
         if key.kind != KeyEventKind::Press {
             return;
         }
@@ -962,6 +1017,10 @@ impl App {
         }
         if self.prompt.is_some() {
             self.on_prompt_key(key);
+            return;
+        }
+        if key.code == KeyCode::F(12) {
+            self.toggle_terminal_focus();
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && self.tab == 2 {
@@ -989,22 +1048,159 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Tab => self.set_tab((self.tab + 1) % TABS.len()),
             KeyCode::BackTab => self.set_tab((self.tab + TABS.len() - 1) % TABS.len()),
-            KeyCode::Char(c @ '1'..='4') => self.set_tab(c as usize - '1' as usize),
-            KeyCode::PageUp if !self.pinned.is_empty() => self.scroll_watches(-3),
-            KeyCode::PageDown if !self.pinned.is_empty() => self.scroll_watches(3),
+            KeyCode::Char(c @ '1'..='5') => self.set_tab(c as usize - '1' as usize),
+            KeyCode::PageUp if !self.pinned.is_empty() && self.tab != TERMINAL_TAB => {
+                self.scroll_watches(-3)
+            }
+            KeyCode::PageDown if !self.pinned.is_empty() && self.tab != TERMINAL_TAB => {
+                self.scroll_watches(3)
+            }
             _ => match self.tab {
                 0 => self.on_scan_key(key.code),
                 1 => self.on_regs_key(key.code),
                 2 => self.on_plugins_key(key.code),
-                _ => self.on_log_key(key.code),
+                3 => self.on_log_key(key.code),
+                _ => self.on_terminal_tab_key(key.code),
             },
         }
     }
 
     fn set_tab(&mut self, tab: usize) {
-        self.tab = tab;
-        if tab == 0 && !self.scanned {
+        self.tab = tab.min(TABS.len() - 1);
+        if self.tab != TERMINAL_TAB {
+            self.terminal_focus = false;
+        }
+        if self.tab == 0 && !self.scanned {
             self.request_scan();
+        }
+        if self.tab == TERMINAL_TAB && self.terminal.is_none() {
+            self.ensure_terminal();
+        }
+    }
+
+    // ---- terminal -----------------------------------------------------------
+
+    /**
+     * Starts the shell on first use. The pty is created with the size of the
+     * last terminal draw, and then resized in `tick` when the tab changes size.
+     */
+    fn ensure_terminal(&mut self) {
+        if self.terminal.is_some() || !self.terminal_enabled {
+            return;
+        }
+        let (rows, cols) = self.terminal_size.get();
+        match TerminalSession::spawn(rows, cols, self.socket.as_deref()) {
+            Ok(session) => {
+                self.terminal = Some(session);
+                self.terminal_error = None;
+                if self.tab == TERMINAL_TAB && !self.terminal_focus {
+                    self.status =
+                        "Terminal · F12 or Enter to type, PgUp/PgDn to scroll".to_string();
+                }
+            }
+            Err(err) => {
+                self.terminal_error = Some(err.clone());
+                self.push_log(false, format!("terminal: {err}"));
+            }
+        }
+    }
+
+    fn restart_terminal(&mut self) {
+        // Dropping the failed session closes its pty and kills the child
+        self.terminal = None;
+        self.terminal_error = None;
+        self.ensure_terminal();
+        self.focus_terminal();
+    }
+
+    fn focus_terminal(&mut self) {
+        self.terminal_focus = self.terminal.is_some();
+        if self.terminal_focus {
+            self.status = "Terminal focused · keys go to the shell · F12 releases".to_string();
+        }
+    }
+
+    fn toggle_terminal_focus(&mut self) {
+        if self.terminal_focus {
+            self.terminal_focus = false;
+            self.status = "Terminal · F12 or Enter to type, PgUp/PgDn to scroll".to_string();
+            return;
+        }
+        if self.tab != TERMINAL_TAB {
+            self.set_tab(TERMINAL_TAB);
+        }
+        self.ensure_terminal();
+        self.focus_terminal();
+    }
+
+    /**
+     * Keys while the shell owns the keyboard. Ctrl+C is sent to the shell here
+     * (the TUI keeps quitting with Ctrl+C only outside the focus).
+     */
+    fn on_terminal_key(&mut self, key: KeyEvent) {
+        let Some(session) = &self.terminal else {
+            self.terminal_focus = false;
+            return;
+        };
+        let exited = session.exited().is_some();
+        let application_cursor = session.screen().application_cursor();
+        if exited {
+            match key.code {
+                KeyCode::Enter => self.restart_terminal(),
+                KeyCode::Esc => {
+                    self.terminal_focus = false;
+                    self.status = "Terminal · Enter restarts the shell".to_string();
+                }
+                _ => {}
+            }
+            return;
+        }
+        let Some(bytes) = terminal::key_bytes(&key, application_cursor) else {
+            return;
+        };
+        self.write_terminal(&bytes);
+    }
+
+    fn write_terminal(&mut self, bytes: &[u8]) {
+        let result = self.terminal.as_mut().map(|session| {
+            session.scroll_to_bottom();
+            session.write(bytes)
+        });
+        if let Some(Err(err)) = result {
+            let message = format!("terminal: {err}");
+            if let Some(session) = &mut self.terminal {
+                session.mark_exited(message.clone());
+            }
+            self.terminal_focus = false;
+            self.push_log(false, message);
+        }
+    }
+
+    fn on_terminal_tab_key(&mut self, code: KeyCode) {
+        if self.terminal.is_none() {
+            if code == KeyCode::Enter {
+                self.ensure_terminal();
+            }
+            return;
+        }
+        let exited = self
+            .terminal
+            .as_ref()
+            .is_some_and(|session| session.exited().is_some());
+        match code {
+            KeyCode::PageUp => {
+                if let Some(session) = &mut self.terminal {
+                    session.scroll(-5);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(session) = &mut self.terminal {
+                    session.scroll(5);
+                }
+            }
+            KeyCode::Enter if exited => self.restart_terminal(),
+            KeyCode::Enter => self.focus_terminal(),
+            _ => {}
         }
     }
 
@@ -1412,6 +1608,71 @@ mod tests {
         println!("{scan}\n{regs}");
     }
 
+    #[test]
+    fn terminal_tab_is_reachable_and_does_not_steal_keys_unfocused() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+        assert_eq!(app.tab, 4);
+        assert!(!app.terminal_focus);
+
+        let screen = render(&app);
+        assert!(screen.contains("5 Terminal"), "{screen}");
+        assert!(screen.contains("F12"), "{screen}");
+
+        // Tests disable the automatic spawn, so F12 has no shell to focus
+        app.on_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(!app.terminal_focus);
+
+        // Outside the focus the usual keys still belong to the TUI
+        app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.quit);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_focus_sends_keys_and_keeps_ctrl_c_for_the_shell() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        app.terminal =
+            Some(TerminalSession::spawn_for_test("/bin/sh", &[], 24, 80).expect("shell session"));
+        app.tab = 4;
+        app.on_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(app.terminal_focus);
+
+        for character in "printf 'from the terminal\\n'".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let wait = |app: &mut App, cond: &dyn Fn(&App) -> bool| {
+            for _ in 0..100 {
+                app.tick();
+                if cond(app) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("timed out\n{}", render(app));
+        };
+        wait(&mut app, &|app| {
+            app.terminal
+                .as_ref()
+                .is_some_and(|session| session.screen().contents().contains("from the terminal"))
+        });
+
+        // Ctrl+C is a byte for the shell while the terminal has the focus
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.quit);
+
+        // F12 gives the keyboard back and the TUI shortcut works again
+        app.on_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(!app.terminal_focus);
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.quit);
+
+        let screen = render(&app);
+        assert!(screen.contains("from the terminal"), "{screen}");
+    }
+
     fn test_view(id: &str) -> View {
         View {
             id: id.into(),
@@ -1421,6 +1682,8 @@ mod tests {
             refresh_ms: None,
             stream: true,
             metric: None,
+            min: None,
+            max: None,
             device: DeviceAccess::Exclusive,
         }
     }
@@ -1564,6 +1827,8 @@ mod tests {
             refresh_ms: None,
             stream: false,
             metric: Some("Current".into()),
+            min: None,
+            max: None,
             device: DeviceAccess::Shared,
         };
         app.plugins = vec![PluginEntry {
@@ -1607,6 +1872,57 @@ mod tests {
     }
 
     #[test]
+    fn chart_can_fix_the_axis_for_a_discrete_metric() {
+        let mut app = App::new_for_tests(&Iocc::default());
+        let view = View {
+            id: "graph".into(),
+            label: Some("Ignition".into()),
+            command: Vec::new(),
+            kind: ViewKind::Chart,
+            refresh_ms: None,
+            stream: false,
+            metric: Some("Ignition".into()),
+            min: Some(0.0),
+            max: Some(1.0),
+            device: DeviceAccess::Shared,
+        };
+        app.plugins = vec![PluginEntry {
+            name: "p".into(),
+            path: PathBuf::new(),
+            described: true,
+            manifest: manifest::Manifest {
+                protocol: 1,
+                views: vec![view],
+                ..Default::default()
+            },
+        }];
+        app.plugins_loaded = true;
+        let tag = view_tag("p", "graph");
+        let history = app.history.entry(format!("{tag}:Ignition")).or_default();
+        history.extend([0.0, 1.0, 0.0]);
+        app.views.insert(
+            tag,
+            ViewData {
+                content: ViewContent::Metrics(vec![Metric {
+                    name: "Ignition".into(),
+                    value: 0.0,
+                    unit: None,
+                }]),
+                updated: Instant::now(),
+            },
+        );
+        app.tab = 2;
+        app.zoom = true;
+
+        let screen = render(&app);
+        // Fixed bounds keep the axis at 0..1 instead of padding it to -0.1..1.1
+        assert!(screen.contains("min 0  max 1"), "{screen}");
+        assert!(screen.contains("0.5"), "{screen}");
+        assert!(!screen.contains("-0.100"), "{screen}");
+        assert!(screen.contains("Ignition: 0"), "{screen}");
+    }
+
+    #[test]
     fn chart_cycles_metrics_with_m() {
         let mut app = App::new_for_tests(&Iocc::default());
         let view = View {
@@ -1617,6 +1933,8 @@ mod tests {
             refresh_ms: None,
             stream: false,
             metric: Some("Current".into()),
+            min: None,
+            max: None,
             device: DeviceAccess::Shared,
         };
         app.plugins = vec![PluginEntry {

@@ -49,6 +49,7 @@ continuously — the panel would keep showing `paused`/`stopped`.
 | `views[].label` | panel title; defaults to the view `id` |
 | `views[].kind` | `text` (default), `table`, `metrics` or `chart` |
 | `views[].metric` | for `chart`: the series shown first; defaults to the first metric of the output (`m` cycles) |
+| `views[].min` / `views[].max` | for `chart`: fixed y-axis bounds (both are required and `max > min`); leave them out to pad the axis around the samples. Useful for discrete `0/1` signals |
 | `views[].refresh_ms` | optional; without it the view is loaded once and kept until `R` reloads the manifests. Ignored when `stream` is set |
 | `views[].stream` | `true`: start the command once and read one update per stdout line |
 | `views[].device` | `exclusive` (default) or `shared` (uses `IOCC_SOCKET`, see below) |
@@ -73,8 +74,11 @@ action and on `R`, so the next prompt already shows what was saved. `iocc-powmon
 rewrites only the `powmon.chip.mode` / `powmon.chip.maxcurrent` lines and fills the *Calibrate* and
 *Set mode* defaults from them.
 
-`iocc` never rewrites an existing `config.yaml`; it only creates the template when the file is
-missing.
+`iocc` never rewrites an existing `config.yaml` on its own; it only creates the template when the
+file is missing. `iocc config import <file>` is the explicit exception: it merges the top level
+sections of another YAML file (such as the `config.yaml` shipped with a plugin) into the shared
+file, keeping existing sections, comments and ordering. Plugin installers run it after copying the
+binary, so the new settings are available on the first run.
 
 ## Sharing the device between plugins
 
@@ -88,6 +92,10 @@ The socket path is chosen in this order: a non-empty `IOCC_SOCKET`, then `$XDG_R
 then a per process file in the temp directory (only reachable through the variable, e.g. when there
 is no runtime dir). It is created with mode `0600` and recreated when the TUI starts. The broker only
 exists on Unix.
+
+The Terminal tab exports the same socket to the shell it starts (`IOCC_TERMINAL=1` marks the session),
+so a command typed there finds the broker automatically: `iocc scan`, `iocc bench on` or a plugin run
+from that shell share the chip with the TUI instead of failing with "resource busy".
 
 Protocol: one JSON object per line, one response line each.
 
@@ -126,28 +134,27 @@ Rules:
   code/stderr in the panel and stays stopped until `R` reloads the manifests.
 - The socket is only created on Unix; elsewhere shared views show an error panel and shared actions
   refuse to run, while exclusive ones are unchanged.
-- Command line use is unchanged: `iocc <name> ...` never sets `IOCC_SOCKET`, so the plugin still opens
-  the device itself. Only the TUI sets it, and only for `shared` views/actions.
-- The native `iocc status`/`scan`/`read`/`write` commands open the device directly by default
-  (`iocc read ...`), but accept `--via-tui` to go through a running TUI instead:
+- Command line use follows the same idea: `iocc <name> ...` sets `IOCC_SOCKET` when a running TUI answers `ping`, so the plugin shares the chip instead of failing with "resource busy". `--direct` leaves the variable unset and the plugin opens the device itself; `--broker` (alias `--via-tui`) requires a broker and fails when none is running.
+- The native `iocc status`/`scan`/`read`/`write` commands also use the detected broker by default. Use `--direct` to keep opening the device directly, or `--broker` to require a running TUI:
 
   ```sh
-  iocc --via-tui status
-  iocc --via-tui scan
-  iocc --via-tui read -a 4A -r 02 -e 2
-  iocc --via-tui write -a 4A -r 02 -d 01
+  iocc status
+  iocc scan
+  iocc read -a 4A -r 02 -e 2
+  iocc write -a 4A -r 02 -d 01
+  iocc --direct status   # ignore a running TUI
+  iocc --broker status   # error if no TUI is running
   ```
 
   It uses `IOCC_SOCKET` or `$XDG_RUNTIME_DIR/iocc.sock`; export `IOCC_SOCKET` when the TUI was started
-  with a custom path. The flag is rejected for `iocc tui` and plugins (plugins use `IOCC_SOCKET`).
-- To use a shared plugin from another terminal while the TUI is open, export the path yourself:
+  with a custom path. `--broker` is rejected for `iocc tui` (which owns the device itself).
+- Plugin commands from another terminal use the same socket automatically, so the chip stays with the
+  TUI:
 
   ```sh
-  IOCC_SOCKET=/run/user/1000/iocc.sock iocc powmon read --json
+  iocc powmon read --json
+  iocc bench on
   ```
-
-  This works because the command line inherits the environment; it only helps plugins that implement
-  the protocol.
 
 In Rust, the [`iocc-bus`](../iocc-bus) crate implements this protocol (Unix; the `Bus` stubs return
 `Unsupported` elsewhere), so a plugin can just call the typed methods:
@@ -215,11 +222,15 @@ simply stops producing rows.
 - `text`: shown as is (streaming text keeps the last 200 lines).
 - `table`: `{"columns": ["Port", "State"], "rows": [["a", "on"], ["b", 0]]}`
 - `metrics`: `{"metrics": [{"name": "Voltage", "value": 12.1, "unit": "V"}]}`, shown with a sparkline of the last 120 samples.
-- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record.
+- `chart`: same JSON as `metrics`, drawn as a Braille line chart over the last 120 samples. `"metric": "Current"` selects the initial series (default: the first metric); `unit` is shown with the current value, min and max, and `m` cycles through the metrics of the sample. On a panel too short for axes it falls back to the sparkline. A chart does not feed the CSV recorder, so pin a `metrics` panel to record. Add `"min"` and `"max"` to fix the y axis (for a discrete `0/1` signal, for example) instead of padding it around the samples.
 
 ```json
 {"id": "graph", "label": "Current graph", "kind": "chart", "metric": "Current",
  "stream": true, "device": "shared", "command": ["watch", "--json", "--interval-ms", "500"]}
+
+{"id": "ignition", "label": "Ignition graph", "kind": "chart", "metric": "Ignition",
+ "min": 0, "max": 1, "stream": true, "device": "shared",
+ "command": ["watch", "--json", "--interval-ms", "500"]}
 ```
 
 A non zero exit code shows stdout/stderr in red instead.
@@ -236,7 +247,7 @@ A non zero exit code shows stdout/stderr in red instead.
 | Watches show `paused` | an exclusive action is running; they restart automatically when it finishes. |
 | A `shared` action is refused | there is no broker socket (not Unix, or a stale `IOCC_SOCKET`); see above. |
 | `pin a metrics panel before recording (p)` | `g` records only pinned `metrics` views; pin one first. |
-| `Error: no broker socket ...` with `--via-tui` | the TUI is not running, or it uses a custom `IOCC_SOCKET` that is not exported in this shell. |
+| `Error: --broker was given but no iocc broker answered ...` | the TUI is not running, or it uses a custom `IOCC_SOCKET` that is not exported in this shell. Drop `--broker` for automatic/direct access. |
 | Recording file is not where expected | the path is in the log when recording starts; set `IOCC_RECORD` to choose it. |
 
 ## Try it
@@ -286,8 +297,9 @@ the git branch/tag shown in the template README.
 
 | Tab | Keys |
 |-----|------|
-| all | `Tab`/`Shift+Tab` or `1`-`4` switch tab, `PageUp`/`PageDown` scroll the Watches column, `q` quit |
+| all | `Tab`/`Shift+Tab` or `1`-`5` switch tab, `PageUp`/`PageDown` scroll the Watches column (the shell history on Terminal), `q` quit |
 | Scan | arrows move, `Enter` opens the address in Registers, `s` rescan, `i` device info |
 | Registers | `↑↓` select, `Enter` write byte, `r` read, `p` poll, `a`/`g`/`n` address/start/count, `m` read-only |
 | Plugins | `↑↓` plugin, `[`/`]` panel, `Enter`/`→` actions, `Esc` back, `p` pin/unpin, `x` unpin, `,`/`.` reorder, `z` zoom, `g` CSV, `m` next metric on a chart panel, `Ctrl+↑`/`Ctrl+↓` scroll panel, `P` unpin all, `R` reload manifests |
 | Log | `↑↓` scroll, `c` clear |
+| Terminal | `F12`/`Enter` focus, `F12` release, `PageUp`/`PageDown` scroll the shell history, `Enter` restarts an exited shell. While focused every key (including `Ctrl+C`, `Tab` and `q`) goes to the shell, so use `F12` to return to the TUI |

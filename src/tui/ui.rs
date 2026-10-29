@@ -1,5 +1,5 @@
 use super::manifest::{Metric, ViewKind, cell_text};
-use super::{App, TABS, ViewContent, WATCH_PANEL_H, view_tag};
+use super::{App, TABS, TERMINAL_TAB, ViewContent, WATCH_PANEL_H, view_tag};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -14,6 +14,11 @@ const OK: Color = Color::Green;
 const ERR: Color = Color::Red;
 const CHANGED: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
+
+/// Width reserved for the y-axis labels. Keeping it constant across charts
+/// makes the graph area start at the same column when panels are stacked in the
+/// *Watches* column, even when one axis has decimals and another does not.
+const CHART_LABEL_WIDTH: usize = 8;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -36,7 +41,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         0 => draw_scan(frame, app, body),
         1 => draw_regs(frame, app, body),
         2 => draw_plugins(frame, app, body),
-        _ => draw_log(frame, app, body),
+        3 => draw_log(frame, app, body),
+        _ => draw_terminal(frame, app, body),
     }
     draw_footer(frame, app, footer);
     if let Some(prompt) = &app.prompt {
@@ -75,16 +81,28 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if app.terminal_focus {
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", app.status), Style::new().fg(Color::Cyan)),
+            Span::styled(
+                "│ terminal focused · keys go to the shell · F12 releases",
+                Style::new().fg(DIM),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let mut keys = match app.tab {
         0 => "←↑↓→ move · Enter open · s scan · i info",
         1 => "↑↓ · Enter write · r read · p poll · a/g/n set · m read-only",
         2 if app.action_focus => "↑↓ select · Enter run · Esc back",
         2 if app.zoom => "z close · Ctrl+↑↓ scroll · g CSV · P unpin · R reload",
         2 => "↑↓ plugin · [ ] panel · p pin · x unpin · ,/. order · g CSV · z zoom · R reload",
-        _ => "↑↓ scroll · c clear",
+        3 => "↑↓ scroll · c clear",
+        _ => "Enter/F12 type · PgUp/PgDn history · Enter restarts after exit",
     }
     .to_string();
-    if !app.pinned.is_empty() {
+    if !app.pinned.is_empty() && app.tab != TERMINAL_TAB {
         keys.push_str(" · PgUp/PgDn watches");
     }
     let line = Line::from(vec![
@@ -531,14 +549,26 @@ fn draw_chart(
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
             (lo.min(*v), hi.max(*v))
         });
+    // A plugin can pin the axis for discrete signals (0/1, states, limits).
+    // Without both bounds the axis keeps a 10% margin around the samples.
+    let fixed = match (view.min, view.max) {
+        (Some(lo), Some(hi)) if hi > lo => Some((lo, hi)),
+        _ => None,
+    };
+    let format_value = |value: f64| chart_value(value, fixed.is_some());
     let header = Line::from(vec![
         Span::raw(format!("{}: ", metric.name)),
         Span::styled(
-            format!("{:.3} {unit}", metric.value),
+            format!("{} {unit}", format_value(metric.value)),
             Style::new().fg(Color::Cyan).bold(),
         ),
         Span::styled(
-            format!("   min {min:.3}  max {max:.3}  ({} samples)", history.len()),
+            format!(
+                "   min {}  max {}  ({} samples)",
+                format_value(min),
+                format_value(max),
+                history.len()
+            ),
             Style::new().fg(DIM),
         ),
         Span::styled(metric_hint(metrics, metric), Style::new().fg(DIM)),
@@ -560,15 +590,16 @@ fn draw_chart(
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     frame.render_widget(Paragraph::new(header), head);
 
-    // Leave a small margin so the line does not touch the axes
-    let span = max - min;
-    let pad = if span > f64::EPSILON {
-        span * 0.1
-    } else {
-        max.abs().max(1.0) * 0.1
-    };
-    let lo = min - pad;
-    let hi = max + pad;
+    // Without fixed bounds, leave a small margin so the line does not touch the axes
+    let (lo, hi) = fixed.unwrap_or_else(|| {
+        let span = max - min;
+        let pad = if span > f64::EPSILON {
+            span * 0.1
+        } else {
+            max.abs().max(1.0) * 0.1
+        };
+        (min - pad, max + pad)
+    });
     let points: Vec<(f64, f64)> = history
         .iter()
         .enumerate()
@@ -591,7 +622,7 @@ fn draw_chart(
             Axis::default()
                 .bounds([lo, hi])
                 .style(Style::new().fg(DIM))
-                .labels([axis_value(lo), axis_value((lo + hi) / 2.0), axis_value(hi)]),
+                .labels(chart_axis_labels(lo, hi, fixed.is_some())),
         );
     frame.render_widget(chart, chart_area);
 }
@@ -625,6 +656,55 @@ fn axis_value(value: f64) -> String {
 }
 
 /**
+ * Y-axis labels, left padded to the same width for every chart so the graph
+ * area starts at the same column when panels are stacked in *Watches*.
+ */
+fn chart_axis_labels(lo: f64, hi: f64, fixed: bool) -> [String; 3] {
+    let format = |value: f64| {
+        if fixed {
+            compact_value(value)
+        } else {
+            axis_value(value)
+        }
+    };
+    let labels = [format(lo), format((lo + hi) / 2.0), format(hi)];
+    let width = labels
+        .iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(CHART_LABEL_WIDTH);
+    labels.map(|label| format!("{label:>width$}"))
+}
+
+/**
+ * Value shown in a chart header. Fixed axes (0/1 states, for example) use the
+ * shortest form instead of three decimals, so the panel reads "1" and not
+ * "1.000".
+ */
+fn chart_value(value: f64, fixed: bool) -> String {
+    if fixed {
+        compact_value(value)
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+/**
+ * Shortest representation with at most three decimals: 0, 1, 0.5, 12.25
+ */
+fn compact_value(value: f64) -> String {
+    if value == 0.0 {
+        return "0".into();
+    }
+    if value.fract() == 0.0 {
+        return format!("{value:.0}");
+    }
+    let text = format!("{value:.3}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/**
  * Normalizes a history window to 0..100 for a Sparkline
  */
 fn spark_points(history: &std::collections::VecDeque<f64>) -> Vec<u64> {
@@ -635,6 +715,173 @@ fn spark_points(history: &std::collections::VecDeque<f64>) -> Vec<u64> {
         .iter()
         .map(|v| (((v - min) / span) * 100.0) as u64)
         .collect()
+}
+
+/**
+ * Interactive shell. The vt100 screen is painted cell by cell, grouping cells
+ * with the same style into spans, so colours and attributes from programs like
+ * `ls --color` or `vim` survive. When the tab has the focus the real cursor is
+ * placed at the shell position and F12 releases the keyboard back to the TUI.
+ */
+fn draw_terminal(frame: &mut Frame, app: &App, area: Rect) {
+    let (state, color) = match (&app.terminal, app.terminal_focus) {
+        (Some(_), true) => ("FOCUSED · F12 releases", Color::Cyan),
+        (Some(session), false) if session.exited().is_some() => ("exited", ERR),
+        (Some(_), false) => ("F12 or Enter to type", DIM),
+        (None, _) if app.terminal_error.is_some() => ("failed", ERR),
+        (None, _) => ("starting", DIM),
+    };
+    let shell = app
+        .terminal
+        .as_ref()
+        .map(|session| session.shell().to_string())
+        .unwrap_or_else(|| "shell".to_string());
+    let title = format!(" Terminal · {shell} · {state} ");
+    let block = Block::bordered()
+        .title(title)
+        .border_style(Style::new().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // `tick` applies this to the pty, resizing the shell with the tab
+    app.terminal_size.set((inner.height, inner.width));
+
+    let Some(session) = &app.terminal else {
+        let message = match &app.terminal_error {
+            Some(err) => vec![
+                Line::from("The shell could not be started:".fg(ERR)),
+                Line::from(err.clone().fg(ERR)),
+                Line::from("Enter tries again · F12 returns to the tabs".fg(DIM)),
+            ],
+            None => vec![
+                Line::from("Starting the shell...".fg(DIM)),
+                Line::from("F12 or Enter gives it the keyboard".fg(DIM)),
+            ],
+        };
+        frame.render_widget(Paragraph::new(message), inner);
+        return;
+    };
+
+    frame.render_widget(Clear, inner);
+    draw_terminal_screen(frame, session.screen(), inner);
+
+    if let Some(message) = session.exited() {
+        let line = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Clear, line);
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
+                " {message} · Enter restarts · F12 releases "
+            )))
+            .style(Style::new().fg(Color::Yellow)),
+            line,
+        );
+        return;
+    }
+
+    let (row, column) = session.screen().cursor_position();
+    if app.terminal_focus
+        && !session.screen().hide_cursor()
+        && session.screen().scrollback() == 0
+        && row < inner.height
+        && column < inner.width
+    {
+        frame.set_cursor_position((inner.x + column, inner.y + row));
+    }
+}
+
+fn draw_terminal_screen(frame: &mut Frame, screen: &vt100::Screen, area: Rect) {
+    let (rows, cols) = screen.size();
+    let height = area.height.min(rows.get());
+    let width = area.width.min(cols.get());
+    let mut lines = Vec::with_capacity(height as usize);
+    for row in 0..height {
+        let mut spans = Vec::new();
+        let mut text = String::new();
+        let mut style = Style::new();
+        let mut started = false;
+        for column in 0..width {
+            let Some(cell) = screen.cell(row, column) else {
+                break;
+            };
+            // The wide character itself already covers two columns
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let cell_style = terminal_style(cell);
+            if !started {
+                style = cell_style;
+                started = true;
+            } else if cell_style != style {
+                spans.push(Span::styled(std::mem::take(&mut text), style));
+                style = cell_style;
+            }
+            if cell.has_contents() {
+                text.push_str(cell.contents());
+            } else {
+                text.push(' ');
+            }
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, style));
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn terminal_style(cell: &vt100::Cell) -> Style {
+    let mut style = Style::new()
+        .fg(terminal_color(cell.fgcolor()))
+        .bg(terminal_color(cell.bgcolor()));
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.dim() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.inverse() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+fn terminal_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+        vt100::Color::Idx(index) => match index {
+            0 => Color::Black,
+            1 => Color::Red,
+            2 => Color::Green,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Magenta,
+            6 => Color::Cyan,
+            7 => Color::Gray,
+            8 => Color::DarkGray,
+            9 => Color::LightRed,
+            10 => Color::LightGreen,
+            11 => Color::LightYellow,
+            12 => Color::LightBlue,
+            13 => Color::LightMagenta,
+            14 => Color::LightCyan,
+            15 => Color::White,
+            other => Color::Indexed(other),
+        },
+    }
 }
 
 fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
@@ -682,4 +929,40 @@ fn draw_prompt(frame: &mut Frame, _app: &App, prompt: &super::Prompt) {
             .block(Block::bordered().title(format!(" {} ", prompt.title))),
         popup,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chart_axis_labels_share_the_same_width() {
+        let labels = chart_axis_labels(0.0, 1.0, true);
+        assert_eq!(
+            labels,
+            [
+                "       0".to_string(),
+                "     0.5".to_string(),
+                "       1".to_string()
+            ]
+        );
+
+        // Decimals or not, every chart reserves CHART_LABEL_WIDTH columns
+        let labels = chart_axis_labels(1.0, 1.4, false);
+        assert!(
+            labels
+                .iter()
+                .all(|label| label.chars().count() == CHART_LABEL_WIDTH)
+        );
+        assert_eq!(labels[0].trim(), "1.00");
+        assert_eq!(labels[2].trim(), "1.40");
+    }
+
+    #[test]
+    fn chart_axis_labels_grow_together_for_wide_values() {
+        let labels = chart_axis_labels(0.0, 12_345_678.5, true);
+        let width = labels[2].chars().count();
+        assert!(width > CHART_LABEL_WIDTH, "{labels:?}");
+        assert!(labels.iter().all(|label| label.chars().count() == width));
+    }
 }

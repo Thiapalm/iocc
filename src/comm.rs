@@ -58,7 +58,7 @@ pub fn device_status(dev: &mut mcp2221::Handle) -> Result<(), mcp2221::Error> {
 
 /**
  * Formats the device information and the address grid shown by a bus scan.
- * Shared by the native `scan` command and by `--via-tui`.
+ * Shared by the native `scan` command and by the broker path.
  */
 pub fn scan_report(info: &str, found: &[u8]) -> String {
     let mut out = format!("{info}\n");

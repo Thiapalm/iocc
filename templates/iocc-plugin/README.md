@@ -4,8 +4,8 @@ A standalone Rust crate that already implements the whole contract of an iocc
 plugin:
 
 - answers `--iocc-manifest` with TUI panels and actions;
-- opens the MCP2221 directly on the command line and uses the TUI broker when
-  `IOCC_SOCKET` is set (`"device": "shared"`);
+- opens the MCP2221 directly when no broker is available and uses the broker when
+  iocc provides `IOCC_SOCKET` (a running TUI, from the command line or the TUI);
 - reads its own section from the shared `config.yaml`, with defaults for a
   missing or partial section;
 - saves settings back to that file without touching comments or other sections;
@@ -41,6 +41,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo install --path .
+iocc config import config.example.yaml   # add the mydev: section to config.yaml
 ```
 
 `cargo install` puts `iocc-mydev` in `~/.cargo/bin` (in `PATH`); plugins are
@@ -111,9 +112,17 @@ action; adjust that line if you target another platform.
 
 ## Configuration
 
-Append [`config.example.yaml`](config.example.yaml) to the shared file
+Add the example section to the shared file with `iocc config import`
 (Linux: `~/.config/iocc/config.yaml`; `iocc` creates the template on first run
-and never rewrites an existing file):
+and only rewrites the file when `config import` is called):
+
+```sh
+iocc config import config.example.yaml
+```
+
+The import keeps the comments of the example and every section already in the
+file. An existing `mydev:` section is left untouched; add `--force` to replace
+it with the example. The section that ends up in `config.yaml` looks like:
 
 ```yaml
 mydev:
@@ -167,8 +176,9 @@ Checklist:
    saved config, and save the new value after applying it.
 5. Keep `--iocc-manifest` fast: it must not open the device (the TUI has a 3 s
    timeout).
-6. Test `iocc mydev <command>` (direct) and `iocc tui` (broker) with and
-   without hardware.
+6. Test `iocc mydev <command>` with and without a running TUI (the broker is
+   detected automatically, `--direct` bypasses it), and `iocc tui` for the
+   panels.
 
 ## Manifest reference
 

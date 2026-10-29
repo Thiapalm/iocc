@@ -1,8 +1,10 @@
 # Example section for the shared iocc config.yaml.
 #
-# Append it to the iocc config.yaml (Linux: ~/.config/iocc/config.yaml).
-# iocc only creates the file, it never rewrites an
-# existing one; the plugin writes back only `settings.gain`/`settings.threshold`
+# Import it with `iocc config import config.example.yaml` (it can be run again
+# after an update; existing sections are kept, `--force` replaces them).
+# iocc only creates the file; `iocc config import` is the
+# only command that edits it (adding the sections of another file) and the
+# plugin writes back only `settings.gain`/`settings.threshold`
 # when a TUI action changes them. Missing values fall back to the defaults in
 # src/config.rs.
 mydev:
